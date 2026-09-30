@@ -77,3 +77,7 @@ ui/.test-userdata/
 eval/
 golden/
 *.gguf
+
+# G2P differential-test goldens are small JSON and load-bearing.
+!tests/golden/
+!tests/golden/*.json

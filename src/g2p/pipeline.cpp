@@ -8,6 +8,7 @@
 #include "g2p.h"
 
 #include "json.h"
+#include "lstm_g2p.h"
 
 #include <algorithm>
 #include <array>
@@ -738,6 +739,114 @@ private:
     PronunciationDict        dict_;
 };
 
+// g2p/converters/lstm.py: LSTMConverter — a LexiconConverter whose OOV words
+// are inferred by a small char→phoneme LSTM (2-layer bi-LSTM encoder feeding a
+// beam-searched attention decoder).  The reference reads a directory of ONNX
+// files; this port consumes the single GGUF produced offline by
+// scripts/convert_lstm_g2p_to_gguf.py and runs on ggml graphs through the
+// GGML_OP_LSTM sweep op (lstm_g2p.h; CPU backend — the beam loop gives a GPU
+// nothing to do).
+class LstmConverter : public Converter {
+public:
+    LstmConverter(std::vector<std::string> languages,
+                  const std::string & dict_path,
+                  const std::string & model_path,
+                  int beam_size)
+        : languages_(std::move(languages)), beam_size_(beam_size) {
+        if (!dict_path.empty()) {
+            const PronunciationDict raw = load_pronunciation_dict(dict_path);
+            // `word(N)` / `word (N)` are variant spellings of the same key
+            // (same merge rules as DictionaryConverter).
+            for (std::size_t i = 0; i < raw.keys.size(); ++i) {
+                const std::string key = strip_variant_marker(raw.keys[i]);
+                const auto it = dict_.index.find(key);
+                if (it == dict_.index.end()) {
+                    dict_.index.emplace(key, dict_.entries.size());
+                    dict_.keys.push_back(key);
+                    dict_.entries.push_back(raw.entries[i]);
+                } else {
+                    std::vector<std::vector<std::string>> & target = dict_.entries[it->second];
+                    target.insert(target.end(), raw.entries[i].begin(), raw.entries[i].end());
+                }
+            }
+        }
+        lstm_.reset(new LstmG2p(LstmG2p::from_file(resolve_gguf(model_path))));
+    }
+
+    const std::vector<std::string> & languages() const override { return languages_; }
+
+    Match find(const std::u32string & text) const override {
+        // Port of LSTMConverter.find: a word is claimed when it is in the
+        // dictionary *or* every (lower-cased) character is inside the char
+        // vocabulary, i.e. the LSTM can infer it.
+        for (const auto & span : word_spans(text)) {
+            const std::string word =
+                lower_utf8(to_utf8(text.substr(span.first, span.second - span.first)));
+            if (dict_.find(word) != nullptr) return Match{ true, span.first, span.second };
+            if (lstm_->can_encode(word)) return Match{ true, span.first, span.second };
+        }
+        return Match{};
+    }
+
+    std::vector<Word> convert(const std::u32string & text) const override {
+        std::vector<Word> result;
+        for (const std::u32string & token : split_words(text)) {
+            const std::string token_text = to_utf8(token);
+            const std::vector<std::vector<std::string>> * pronunciations =
+                dict_.find(lower_utf8(token_text));
+            Reading reading;
+            if (pronunciations != nullptr) {
+                reading.paths.reserve(pronunciations->size());
+                for (const std::vector<std::string> & phonemes : *pronunciations) {
+                    reading.paths.push_back(phonemes.empty()
+                                                ? Path{}
+                                                : Path{ Group{ token_text, phonemes } });
+                }
+            } else {
+                // Port of LexiconConverter.infer_oov → LSTMConverter._predict:
+                // ranked, de-duplicated pronunciations, best first.
+                for (const std::vector<std::string> & phonemes :
+                     lstm_->predict(token_text, beam_size_)) {
+                    reading.paths.push_back(phonemes.empty()
+                                                ? Path{}
+                                                : Path{ Group{ token_text, phonemes } });
+                }
+            }
+            Word word;
+            word.text     = token_text;
+            word.readings = { std::move(reading) };
+            result.push_back(std::move(word));
+        }
+        return result;
+    }
+
+private:
+    // `model_path` in the reference config is the ONNX directory; the C++
+    // build consumes a converted GGUF, looked up in the layouts that occur in
+    // practice: an explicit .gguf path, the GGUF parked next to the directory
+    // (models/assets/LstmG2p-Eng.gguf), or a rename inside it.
+    static std::string resolve_gguf(const std::string & model_path) {
+        auto exists = [](const std::string & path) {
+            std::ifstream in(path, std::ios::binary);
+            return static_cast<bool>(in);
+        };
+        if (model_path.size() >= 5 &&
+            model_path.compare(model_path.size() - 5, 5, ".gguf") == 0) {
+            return model_path;
+        }
+        const std::string aside = model_path + ".gguf";
+        if (exists(aside)) return aside;
+        std::string out = model_path;
+        if (!out.empty() && out.back() != '/' && out.back() != '\\') out.push_back('/');
+        return out + "lstm-g2p.gguf";
+    }
+
+    std::vector<std::string> languages_;
+    PronunciationDict        dict_;
+    std::unique_ptr<LstmG2p> lstm_;
+    int                      beam_size_ = 0;   // 0 = the value recorded in the GGUF
+};
+
 // g2p/converters/chinese.py:_ChineseScriptConverter
 class ChineseConverter : public ScriptDictionaryConverter {
 public:
@@ -1314,6 +1423,24 @@ Pipeline Pipeline::from_config(const std::string & g2p_json, const std::string &
                 }
                 impl.converters.push_back(std::make_unique<CharactersConverter>(
                     languages_of({}), std::move(mapping)));
+            } else if (id == "lstm") {
+                // g2p/converters/lstm.py: dictionary-backed converter with a
+                // char-LSTM for OOV words.  `model_path` is the reference's
+                // ONNX directory; here it points at the converted GGUF (a
+                // directory is accepted too — <dir>/lstm-g2p.gguf is used).
+                const std::string model_path = kwarg_path("model_path");
+                if (model_path.empty()) {
+                    throw InvalidArgument("converter 'lstm' requires a 'model_path' kwarg");
+                }
+                int beam_size = 0;   // 0 = the value recorded in the GGUF
+                if (kwargs != nullptr) {
+                    if (const json::Value * value = kwargs->find("beam_size");
+                        value != nullptr && value->is_number()) {
+                        beam_size = static_cast<int>(value->number);
+                    }
+                }
+                impl.converters.push_back(std::make_unique<LstmConverter>(
+                    languages_of({}), kwarg_path("dict_path"), model_path, beam_size));
             } else {
                 warn("unsupported converter '" + id + "', skipping");
             }

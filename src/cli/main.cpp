@@ -4,8 +4,10 @@
 
 #include "align_decode.h"
 #include "audio_io.h"
+#include "breath/breath.h"
 #include "g2p/g2p.h"
 #include "g2p/select.h"
+#include "json.h"
 #include "model_impl.h"
 
 #include "tifa_ggml/errors.h"
@@ -48,6 +50,14 @@ Usage:
   tifa_ggml_cli --version | --help
   tifa_ggml_cli inspect <model.gguf>
   tifa_ggml_cli align <audio-or-dir> -m <model.gguf> [options]
+  tifa_ggml_cli breathe <audio-or-dir> -m <breath.gguf> [options]
+
+Breathe options:
+  -m, --model PATH            breath/AP detector GGUF (required)
+  -o, --output-dir DIR        output directory (default: input directory)
+      --output-formats LIST   textgrid,json           (default: textgrid)
+      --backend NAME          auto | cpu | vulkan | cuda | metal
+  -q, --quiet                 only report errors
 
 Align options:
   -m, --model PATH            TIFA GGUF model (required)
@@ -497,6 +507,139 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
     return skipped == 0 ? 0 : 1;
 }
 
+// ---------------------------------------------------------------------------
+// breathe — BreathLab AP/SP detection (breath.h)
+// ---------------------------------------------------------------------------
+
+struct BreatheOptions {
+    std::string model;
+    std::string output_dir;
+    std::string output_formats = "textgrid";
+    std::string backend = "auto";
+    bool        quiet = false;
+};
+
+int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
+    if (opt.model.empty()) throw InvalidArgument("--model is required");
+    const fs::path in_path(input);
+    if (!fs::exists(in_path)) throw InvalidArgument("input not found: " + input);
+
+    std::vector<fs::path> files = collect_audio(in_path);
+    if (files.empty()) throw InvalidArgument("no audio files found in " + input);
+
+    fs::path out_dir = opt.output_dir.empty()
+        ? (fs::is_directory(in_path) ? in_path : in_path.parent_path())
+        : fs::path(opt.output_dir);
+    fs::create_directories(out_dir);
+
+    const bool want_textgrid =
+        opt.output_formats.find("textgrid") != std::string::npos;
+    const bool want_json = opt.output_formats.find("json") != std::string::npos;
+
+    if (!opt.backend.empty() && opt.backend != "auto") {
+#if defined(_WIN32)
+        _putenv_s("TIFA_GGML_BACKEND", opt.backend.c_str());
+#else
+        setenv("TIFA_GGML_BACKEND", opt.backend.c_str(), 1);
+#endif
+    }
+
+    BreathModel model = BreathModel::load(opt.model);
+    if (!opt.quiet) {
+        std::fprintf(stderr, "breath: backend %s, model rate %d Hz, %.1f fps, threshold %.2f\n",
+                     model.backend_name(), model.sample_rate(),
+                     static_cast<double>(model.fps()), static_cast<double>(model.threshold()));
+    }
+
+    int ok = 0, skipped = 0;
+    for (const fs::path & audio : files) {
+        const std::string identifier = basename_no_ext(audio);
+        try {
+            internal::AudioBuffer audio_buf = internal::load_audio_file(audio.string());
+            const double seconds =
+                audio_buf.sample_rate > 0
+                    ? static_cast<double>(audio_buf.samples.size()) / audio_buf.sample_rate
+                    : 0.0;
+
+            const auto t0 = std::chrono::steady_clock::now();
+            std::vector<BreathEvent>   ap_events;
+            std::vector<BreathSegment> segments;
+            model.run(audio_buf.samples.data(), audio_buf.samples.size(),
+                      audio_buf.sample_rate, ap_events, segments);
+            const auto t1 = std::chrono::steady_clock::now();
+            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+            if (want_textgrid) {
+                // One interval tier with the AP/SP/V timeline; unlabelled
+                // stretches are impossible (the segments tile the file).
+                TextGridTier tier;
+                tier.name = "breath";
+                tier.intervals.reserve(segments.size());
+                for (const BreathSegment & segment : segments) {
+                    TextGridInterval interval;
+                    interval.xmin = segment.start;
+                    interval.xmax = segment.end;
+                    interval.text = segment.label;
+                    tier.intervals.push_back(std::move(interval));
+                }
+                write_textgrid_file((out_dir / (identifier + ".breath.TextGrid")).string(),
+                                    { std::move(tier) }, seconds);
+            }
+            if (want_json) {
+                namespace bren_json = tifa_ggml::internal::json;
+                using bren_json::Value;
+                // The json builder has no factories; set type + payload by hand.
+                const auto num = [](double v) {
+                    Value x; x.type = Value::Type::Number; x.number = v; return x;
+                };
+                const auto text = [](const std::string & s) {
+                    Value x; x.type = Value::Type::String; x.str = s; return x;
+                };
+                const auto obj = []() {
+                    Value x; x.type = Value::Type::Object; return x;
+                };
+                const auto arr = []() {
+                    Value x; x.type = Value::Type::Array; return x;
+                };
+
+                Value ap_list  = arr();
+                Value seg_list = arr();
+                for (const BreathEvent & event : ap_events) {
+                    Value item = obj();
+                    item.obj.push_back({ "start", num(event.start) });
+                    item.obj.push_back({ "end",   num(event.end) });
+                    ap_list.arr.push_back(std::move(item));
+                }
+                for (const BreathSegment & segment : segments) {
+                    Value item = obj();
+                    item.obj.push_back({ "label", text(segment.label) });
+                    item.obj.push_back({ "start", num(segment.start) });
+                    item.obj.push_back({ "end",   num(segment.end) });
+                    seg_list.arr.push_back(std::move(item));
+                }
+                Value doc = obj();
+                doc.obj.push_back({ "sample_rate", num(audio_buf.sample_rate) });
+                doc.obj.push_back({ "duration",    num(seconds) });
+                doc.obj.push_back({ "ap",          std::move(ap_list) });
+                doc.obj.push_back({ "segments",    std::move(seg_list) });
+                std::ofstream out(out_dir / (identifier + ".breath.json"), std::ios::binary);
+                out << bren_json::dump(doc, 2) << "\n";
+            }
+
+            ++ok;
+            if (!opt.quiet) {
+                std::printf("%-40s %6.1f s  %3zu AP events  %4zu segments  %7.1f ms\n",
+                            identifier.c_str(), seconds, ap_events.size(), segments.size(), ms);
+            }
+        } catch (const std::exception & e) {
+            ++skipped;
+            std::fprintf(stderr, "[error] %s: %s\n", identifier.c_str(), e.what());
+        }
+    }
+    std::fprintf(stderr, "done: %d ok, %d skipped/failed\n", ok, skipped);
+    return skipped == 0 ? 0 : 1;
+}
+
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -549,6 +692,26 @@ int main(int argc, char ** argv) {
                 else throw InvalidArgument("unknown option: " + a);
             }
             return cmd_align(args[1], opt);
+        }
+        if (cmd == "breathe") {
+            if (args.size() < 2) { print_usage(); return 1; }
+            BreatheOptions opt;
+            Args it; it.values.assign(args.begin() + 2, args.end());
+            while (it.has()) {
+                const std::string a = it.next();
+                auto value = [&]() -> std::string {
+                    const char * v = it.next();
+                    if (!v) throw InvalidArgument("missing value after " + a);
+                    return v;
+                };
+                if (a == "-m" || a == "--model")           opt.model = value();
+                else if (a == "-o" || a == "--output-dir") opt.output_dir = value();
+                else if (a == "--output-formats")          opt.output_formats = value();
+                else if (a == "--backend")                 opt.backend = value();
+                else if (a == "-q" || a == "--quiet")      opt.quiet = true;
+                else throw InvalidArgument("unknown option: " + a);
+            }
+            return cmd_breathe(args[1], opt);
         }
         std::fprintf(stderr, "unknown command: %s\n", cmd.c_str());
         print_usage();

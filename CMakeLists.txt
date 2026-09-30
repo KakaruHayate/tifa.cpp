@@ -85,6 +85,10 @@ set(TIFA_GGML_CORE_SOURCES
     src/g2p/pipeline.cpp
     src/g2p/encoding.cpp
     src/g2p/select.cpp
+    src/g2p/lstm_g2p.cpp
+    src/breath/breath_mel.cpp
+    src/breath/breath_net.cpp
+    src/breath/breath.cpp
 )
 
 add_library(tifa_ggml STATIC ${TIFA_GGML_CORE_SOURCES})

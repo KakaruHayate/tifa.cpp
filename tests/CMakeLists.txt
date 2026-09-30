@@ -12,7 +12,12 @@ add_executable(tifa_ggml_tests
     support/reference_io.cpp
     test_backend.cpp
     test_decode.cpp
+    test_g2p_lstm.cpp
     test_textgrid.cpp
+)
+
+target_compile_definitions(tifa_ggml_tests PRIVATE
+    GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
 )
 
 target_link_libraries(tifa_ggml_tests PRIVATE
