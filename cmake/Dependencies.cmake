@@ -153,6 +153,13 @@ if(ggml_SOURCE_DIR)
         "ggml Vulkan disk-backed VkPipelineCache"
     )
 
+    # Fused batched LSTM sweep (English G2P; see cmake/patches/ggml-lstm-op.md).
+    tifa_ggml_apply_patch(
+        "${ggml_SOURCE_DIR}"
+        "${CMAKE_CURRENT_LIST_DIR}/patches/ggml-lstm-op.patch"
+        "ggml fused batched LSTM (GGML_OP_LSTM)"
+    )
+
     # Fail loudly rather than shipping a "fast cold start" that is not there.
     if(TIFA_GGML_VULKAN)
         file(STRINGS "${ggml_SOURCE_DIR}/src/ggml-vulkan/ggml-vulkan.cpp" _vk_hits
@@ -164,6 +171,15 @@ if(ggml_SOURCE_DIR)
                 "_deps/ggml-src-populate stamp (or the whole build dir) and "
                 "re-configure.")
         endif()
+    endif()
+
+    file(STRINGS "${ggml_SOURCE_DIR}/include/ggml.h" _lstm_hits
+         REGEX "GGML_OP_LSTM")
+    if(_lstm_hits STREQUAL "")
+        message(FATAL_ERROR
+            "the ggml LSTM op patch is not present in ${ggml_SOURCE_DIR} "
+            "(see cmake/patches/).  Delete the stale _deps/ggml-src-populate "
+            "stamp (or the whole build dir) and re-configure.")
     endif()
 
     add_subdirectory("${ggml_SOURCE_DIR}" "${ggml_BINARY_DIR}")

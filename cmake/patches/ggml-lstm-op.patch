@@ -1,0 +1,271 @@
+diff --git a/include/ggml.h b/include/ggml.h
+index 5cb49d0..8811e93 100644
+--- a/include/ggml.h
++++ b/include/ggml.h
+@@ -590,6 +590,9 @@ extern "C" {
+ 
+         GGML_OP_GLU,
+ 
++        // tifa.cpp patch: fused batched LSTM sweep (English G2P).
++        GGML_OP_LSTM,
++
+         GGML_OP_COUNT,
+     };
+ 
+@@ -1287,6 +1290,23 @@ extern "C" {
+              enum ggml_glu_op     op,
+              bool                 swapped);
+ 
++    // tifa.cpp patch: fused batched LSTM, the whole recurrent sweep as one
++    // op, parallel over the batch.  Gates in ONNX order i,o,f,c:
++    //   c' = sigmoid(f)*c + sigmoid(i)*tanh(g);  h' = sigmoid(o)*tanh(c')
++    // whh [H, 4H] (gate g's H weights at row g); gi_all [4H, B, L] the
++    // precomputed Wih*x + bih; bhh [4H] the recurrent bias; h0/c0 [H, B] the
++    // optional initial state (zeros when NULL).  dst [H, B, L + 2]: the L
++    // output planes followed by the final h and c.  `reverse` sweeps time
++    // backwards (bidirectional encoders).
++    GGML_API struct ggml_tensor * ggml_lstm(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * whh,
++            struct ggml_tensor  * gi_all,
++            struct ggml_tensor  * bhh,
++            struct ggml_tensor  * h0,
++            struct ggml_tensor  * c0,
++            bool                  reverse);
++
+     GGML_API struct ggml_tensor * ggml_reglu(
+             struct ggml_context * ctx,
+             struct ggml_tensor  * a);
+diff --git a/src/ggml-backend-meta.cpp b/src/ggml-backend-meta.cpp
+index a5a3a58..5b70dd7 100644
+--- a/src/ggml-backend-meta.cpp
++++ b/src/ggml-backend-meta.cpp
+@@ -944,6 +944,7 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
+             } break;
+             case GGML_OP_PAD_REFLECT_1D:
+             case GGML_OP_ROLL:
++            case GGML_OP_LSTM:
+             case GGML_OP_ARANGE:
+             case GGML_OP_TIMESTEP_EMBEDDING: {
+                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
+diff --git a/src/ggml-cpu/ggml-cpu.c b/src/ggml-cpu/ggml-cpu.c
+index 491316f..d28a660 100644
+--- a/src/ggml-cpu/ggml-cpu.c
++++ b/src/ggml-cpu/ggml-cpu.c
+@@ -2032,6 +2032,10 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+             {
+                 ggml_compute_forward_glu(params, tensor);
+             } break;
++        case GGML_OP_LSTM:
++            {
++                ggml_compute_forward_lstm(params, tensor);
++            } break;
+         case GGML_OP_GET_REL_POS:
+             {
+                 ggml_compute_forward_get_rel_pos(params, tensor);
+@@ -2318,6 +2322,10 @@ static int ggml_get_n_tasks(struct ggml_tensor * node, int n_threads) {
+                     GGML_ABORT("fatal error");
+             }
+             break;
++        case GGML_OP_LSTM:
++            {
++                n_tasks = n_threads;
++            } break;
+         case GGML_OP_SILU_BACK:
+         case GGML_OP_MUL:
+         case GGML_OP_DIV:
+diff --git a/src/ggml-cpu/ops.cpp b/src/ggml-cpu/ops.cpp
+index 42ec809..3b07116 100644
+--- a/src/ggml-cpu/ops.cpp
++++ b/src/ggml-cpu/ops.cpp
+@@ -12002,3 +12002,96 @@ void ggml_compute_forward_lightning_indexer(
+         }
+     }
+ }
++
++// =========================================================================
++// tifa.cpp patch: fused batched LSTM sweep (English G2P).
++// See ggml_lstm() in include/ggml.h for the tensor contract.  Parallel over
++// the batch; serial over the time-steps (the recurrence is inherently
++// sequential).  Gate rows in gi_all / whh / bhh follow the ONNX LSTM order
++// i, o, f, c.
++// =========================================================================
++void ggml_compute_forward_lstm(
++        const ggml_compute_params * params,
++        ggml_tensor * dst) {
++
++    const ggml_tensor * whh = dst->src[0];  // [H, 4H]
++    const ggml_tensor * gi  = dst->src[1];  // [4H, B, L]
++    const ggml_tensor * bhh = dst->src[2];  // [4H]
++    const ggml_tensor * h0  = dst->src[3];  // [H, B] or NULL (zeros)
++    const ggml_tensor * c0  = dst->src[4];  // [H, B] or NULL (zeros)
++
++    GGML_ASSERT(dst->type == GGML_TYPE_F32 && whh->type == GGML_TYPE_F32 &&
++                gi->type == GGML_TYPE_F32 && bhh->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_is_contiguous(dst) && ggml_is_contiguous(whh) &&
++                ggml_is_contiguous(gi) && ggml_is_contiguous(bhh));
++    GGML_ASSERT(h0 == NULL || (h0->type == GGML_TYPE_F32 && ggml_is_contiguous(h0)));
++    GGML_ASSERT(c0 == NULL || (c0->type == GGML_TYPE_F32 && ggml_is_contiguous(c0)));
++
++    const int64_t H  = whh->ne[0];
++    const int64_t H4 = whh->ne[1];   // 4*H
++    const int64_t B  = gi->ne[1];
++    const int64_t L  = gi->ne[2];
++    const bool reverse = ggml_get_op_params_i32(dst, 0) != 0;
++
++    const float * whh_d = (const float *) whh->data;   // whh[g*H + k]
++    const float * gi_d  = (const float *) gi->data;    // gi[g + H4*b + H4*B*t]
++    const float * bhh_d = (const float *) bhh->data;   // bhh[g]
++    const float * h0_d  = h0 ? (const float *) h0->data : NULL;   // h0[k + H*b]
++    const float * c0_d  = c0 ? (const float *) c0->data : NULL;
++
++    // dst [H, B, L+2]: planes 0..L-1 the h sequence, plane L the final h,
++    // plane L+1 the final c; element [k, b, plane] at k + H*b + H*B*plane.
++    float * dst_d = (float *) dst->data;
++    float * hT_d  = dst_d + H * B * L;
++    float * cT_d  = dst_d + H * B * (L + 1);
++
++    const int64_t per = (B + params->nth - 1) / params->nth;
++    const int64_t b0  = (int64_t) params->ith * per;
++    int64_t b1 = b0 + per;
++    if (b1 > B) b1 = B;
++
++    std::vector<float> h(H);
++    std::vector<float> c(H);
++    std::vector<float> gh(H4);
++
++    for (int64_t b = b0; b < b1; ++b) {
++        if (h0_d) {
++            memcpy(h.data(), h0_d + H*b, H*sizeof(float));
++        } else {
++            std::fill(h.begin(), h.end(), 0.0f);
++        }
++        if (c0_d) {
++            memcpy(c.data(), c0_d + H*b, H*sizeof(float));
++        } else {
++            std::fill(c.begin(), c.end(), 0.0f);
++        }
++
++        for (int64_t s = 0; s < L; ++s) {
++            const int64_t t   = reverse ? (L - 1 - s) : s;
++            const float * gip = gi_d + (H4 * b + H4 * B * t);
++
++            // gh = whh*h + bhh
++            for (int64_t g = 0; g < H4; ++g) {
++                const float * wrow = whh_d + H * g;
++                float acc = bhh_d[g];
++                for (int64_t k = 0; k < H; ++k) acc += wrow[k] * h[k];
++                gh[g] = acc;
++            }
++
++            float * outp = dst_d + (H * b + H * B * t);
++            for (int64_t k = 0; k < H; ++k) {
++                const float ig = 1.0f / (1.0f + expf(-(gip[k]             + gh[k])));
++                const float og = 1.0f / (1.0f + expf(-(gip[H + k]         + gh[H + k])));
++                const float fg = 1.0f / (1.0f + expf(-(gip[2 * H + k]     + gh[2 * H + k])));
++                const float gg = tanhf(gip[3 * H + k]                     + gh[3 * H + k]);
++                const float cn = fg * c[k] + ig * gg;
++                const float hn = og * tanhf(cn);
++                c[k] = cn;
++                h[k] = hn;
++                outp[k] = hn;
++                hT_d[H * b + k] = hn;
++                cT_d[H * b + k] = cn;
++            }
++        }
++    }
++}
+diff --git a/src/ggml-cpu/ops.h b/src/ggml-cpu/ops.h
+index 4c1642a..55a7871 100644
+--- a/src/ggml-cpu/ops.h
++++ b/src/ggml-cpu/ops.h
+@@ -98,6 +98,8 @@ void ggml_compute_forward_win_part(const struct ggml_compute_params * params, st
+ void ggml_compute_forward_win_unpart(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_unary(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_glu(const struct ggml_compute_params * params, struct ggml_tensor * dst);
++// tifa.cpp patch: fused batched LSTM sweep (see ggml_lstm in include/ggml.h).
++void ggml_compute_forward_lstm(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_get_rel_pos(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_add_rel_pos(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+ void ggml_compute_forward_rwkv_wkv6(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+diff --git a/src/ggml.c b/src/ggml.c
+index da7f3a5..270d5a1 100644
+--- a/src/ggml.c
++++ b/src/ggml.c
+@@ -1098,9 +1098,11 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+     "OPT_STEP_SGD",
+ 
+     "GLU",
++
++    "LSTM",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
++static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+ 
+ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "none",
+@@ -1213,9 +1215,11 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "sgd(x)",
+ 
+     "glu(x)",
++
++    "LSTM",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
++static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
+ 
+ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+ 
+@@ -2900,6 +2904,50 @@ struct ggml_tensor * ggml_exp_inplace(
+     return ggml_unary_inplace(ctx, a, GGML_UNARY_OP_EXP);
+ }
+ 
++// tifa.cpp patch: fused batched LSTM sweep (English G2P encoder/decoder).
++// See ggml_lstm() in include/ggml.h for the exact tensor contract.
++struct ggml_tensor * ggml_lstm(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * whh,
++        struct ggml_tensor  * gi_all,
++        struct ggml_tensor  * bhh,
++        struct ggml_tensor  * h0,
++        struct ggml_tensor  * c0,
++        bool                  reverse) {
++    GGML_ASSERT(whh->type    == GGML_TYPE_F32);
++    GGML_ASSERT(gi_all->type == GGML_TYPE_F32);
++    GGML_ASSERT(bhh->type    == GGML_TYPE_F32);
++    GGML_ASSERT(h0 == NULL || h0->type == GGML_TYPE_F32);
++    GGML_ASSERT(c0 == NULL || c0->type == GGML_TYPE_F32);
++    GGML_ASSERT(ggml_is_contiguous(whh));
++    GGML_ASSERT(ggml_is_contiguous(gi_all));
++    GGML_ASSERT(ggml_is_contiguous(bhh));
++    GGML_ASSERT(h0 == NULL || ggml_is_contiguous(h0));
++    GGML_ASSERT(c0 == NULL || ggml_is_contiguous(c0));
++
++    const int64_t H = whh->ne[0];
++    const int64_t B = gi_all->ne[1];
++    const int64_t L = gi_all->ne[2];
++    GGML_ASSERT(whh->ne[1] == gi_all->ne[0]);
++    GGML_ASSERT(bhh->ne[0] == gi_all->ne[0]);
++    GGML_ASSERT(h0 == NULL || (h0->ne[0] == H && h0->ne[1] == B));
++    GGML_ASSERT(c0 == NULL || (c0->ne[0] == H && c0->ne[1] == B));
++
++    struct ggml_tensor * result = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, H, B, L + 2);
++
++    int32_t params[1] = { reverse ? 1 : 0 };
++    ggml_set_op_params(result, params, sizeof(params));
++
++    result->op     = GGML_OP_LSTM;
++    result->src[0] = whh;
++    result->src[1] = gi_all;
++    result->src[2] = bhh;
++    result->src[3] = h0;
++    result->src[4] = c0;
++
++    return result;
++}
++
+ // ggml_glu
+ 
+ static struct ggml_tensor * ggml_glu_impl(
