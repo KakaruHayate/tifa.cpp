@@ -1,0 +1,17 @@
+# Line-ending policy.
+#
+# `*.patch eol=lf` is load-bearing: cmake/Dependencies.cmake feeds these files
+# to `git apply` against ggml sources extracted from an upstream tarball
+# (LF-only).  A checkout with core.autocrlf=true (the default on Windows and
+# on GitHub windows runners) converts a text file's working-tree copy to
+# CRLF, and `git apply` then rejects the patch ("patch does not apply") even
+# though the committed blob is correct.  Forcing LF at checkout keeps the
+# patch byte-identical to what was committed, on every platform.
+*.patch text eol=lf
+
+# Conventional hygiene for the few file types where endings actually matter.
+*.sh   text eol=lf
+*.bat  text eol=crlf
+*.png  binary
+*.ico  binary
+*.icns binary

@@ -114,19 +114,48 @@ ggml_backend_t init_backend(Backend which) {
     switch (which) {
         case Backend::Metal:
 #if defined(TIFA_GGML_HAS_METAL)
-            return ggml_backend_metal_init();
+            // GPU backends may throw instead of returning nullptr when the
+            // system has headers/loader compiled in but no usable runtime
+            // (e.g. CI runners, VMs, machines without drivers).  Any failure
+            // means "this backend is unavailable" so init_best_backend()
+            // keeps its documented fall-through semantics.
+            try {
+                return ggml_backend_metal_init();
+            } catch (const std::exception & e) {
+                std::fprintf(stderr, "metal backend init failed: %s\n", e.what());
+                return nullptr;
+            } catch (...) {
+                return nullptr;
+            }
 #else
             return nullptr;
 #endif
         case Backend::CUDA:
 #if defined(TIFA_GGML_HAS_CUDA)
-            return ggml_backend_cuda_init(0);
+            try {
+                return ggml_backend_cuda_init(0);
+            } catch (const std::exception & e) {
+                std::fprintf(stderr, "cuda backend init failed: %s\n", e.what());
+                return nullptr;
+            } catch (...) {
+                return nullptr;
+            }
 #else
             return nullptr;
 #endif
         case Backend::Vulkan:
 #if defined(TIFA_GGML_HAS_VULKAN)
-            return ggml_backend_vk_init(0);
+            // ggml v0.19's Vulkan init propagates vk::SystemError
+            // (createInstance: ErrorIncompatibleDriver) when the Vulkan
+            // loader is present but no ICD claims the machine.
+            try {
+                return ggml_backend_vk_init(0);
+            } catch (const std::exception & e) {
+                std::fprintf(stderr, "vulkan backend init failed: %s\n", e.what());
+                return nullptr;
+            } catch (...) {
+                return nullptr;
+            }
 #else
             return nullptr;
 #endif
