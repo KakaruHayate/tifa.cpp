@@ -22,12 +22,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          curl.exe -sL -o "$env:RUNNER_TEMP/vulkan-sdk.exe" `
+            https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe
+          & "$env:RUNNER_TEMP/vulkan-sdk.exe" --accept-licenses --default-answer --confirm-command install
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory |
+            Sort-Object Name | Select-Object -Last 1
+          if (-not $sdk) {
+            throw "Vulkan SDK installer produced no C:\VulkanSDK\<version> directory"
+          }
+          "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
+          "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
+
       - name: Detect Vulkan SDK
         id: vulkan
         shell: pwsh
         run: |
           if ($env:VULKAN_SDK -and (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h")) {
             "flag=-DTIFA_GGML_VULKAN=ON" >> $env:GITHUB_OUTPUT
+            Write-Host "Vulkan SDK: $env:VULKAN_SDK"
           } else {
             "flag=-DTIFA_GGML_VULKAN=OFF" >> $env:GITHUB_OUTPUT
             Write-Host "::warning::no Vulkan SDK on the runner - the bundle is CPU-only"

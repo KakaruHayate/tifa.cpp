@@ -32,6 +32,23 @@ function(tifa_ggml_apply_patch source_dir patch_file patch_name)
         message(FATAL_ERROR "Git is required to apply ${patch_name}")
     endif()
 
+    # git apply resolves patch paths against the enclosing repository root:
+    # a fetched source tree without its own .git (URL archive, extracted
+    # FetchContent) makes git walk up to OUR repo, treat the patch paths as
+    # outside the current prefix and silently skip them with exit 0.  Make
+    # sure the source tree is itself a repository so paths resolve locally;
+    # a no-op when it already is one.
+    if(NOT EXISTS "${source_dir}/.git")
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" -C "${source_dir}" init -q
+            RESULT_VARIABLE _init
+            OUTPUT_QUIET ERROR_QUIET
+        )
+        if(NOT _init EQUAL 0)
+            message(FATAL_ERROR "git init failed in ${source_dir}; cannot apply ${patch_name}")
+        endif()
+    endif()
+
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" -C "${source_dir}" apply --check "${patch_file}"
         RESULT_VARIABLE _check
@@ -112,7 +129,14 @@ FetchContent_Declare(
 FetchContent_GetProperties(ggml)
 if(NOT ggml_POPULATED)
     FetchContent_Populate(ggml)
+endif()
 
+# The patches live OUTSIDE the populate guard on purpose: a re-populate
+# (stale download stamp, a restored _deps cache, a fresh checkout) silently
+# replaces the patched sources, and a build that quietly loses the Vulkan
+# pipeline cache looks identical until you measure cold-start time.  The
+# helper is idempotent, so running it on every configure is free.
+if(ggml_SOURCE_DIR)
     if(APPLE AND TIFA_GGML_METAL)
         tifa_ggml_apply_patch(
             "${ggml_SOURCE_DIR}"
@@ -121,14 +145,26 @@ if(NOT ggml_POPULATED)
         )
     endif()
 
-    # Vulkan cold-start fix: persist VkPipelineCache to disk.  Apply on every
-    # build (the patch only touches ggml-vulkan.cpp, compiled only when the
-    # Vulkan backend is enabled) so CPU-only and GPU builds share one source.
+    # Vulkan cold-start fix: persist VkPipelineCache to disk.  Only touches
+    # ggml-vulkan.cpp, so CPU-only and GPU builds can share one source tree.
     tifa_ggml_apply_patch(
         "${ggml_SOURCE_DIR}"
         "${CMAKE_CURRENT_LIST_DIR}/patches/ggml-vulkan-pipeline-cache.patch"
         "ggml Vulkan disk-backed VkPipelineCache"
     )
+
+    # Fail loudly rather than shipping a "fast cold start" that is not there.
+    if(TIFA_GGML_VULKAN)
+        file(STRINGS "${ggml_SOURCE_DIR}/src/ggml-vulkan/ggml-vulkan.cpp" _vk_hits
+             REGEX "GGML_VK_PIPELINE_CACHE_PATH")
+        if(_vk_hits STREQUAL "")
+            message(FATAL_ERROR
+                "the ggml Vulkan pipeline-cache patch is not present in "
+                "${ggml_SOURCE_DIR} (see cmake/patches/).  Delete the stale "
+                "_deps/ggml-src-populate stamp (or the whole build dir) and "
+                "re-configure.")
+        endif()
+    endif()
 
     add_subdirectory("${ggml_SOURCE_DIR}" "${ggml_BINARY_DIR}")
 endif()

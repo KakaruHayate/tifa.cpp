@@ -21,7 +21,7 @@ jobs:
       - name: Install Vulkan headers
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libvulkan-dev glslc
+          sudo apt-get install -y -qq libvulkan-dev glslc spirv-headers spirv-tools
 
       - name: Configure
         run: >
@@ -41,10 +41,24 @@ jobs:
         run: build/bin/tifa_ggml_cli --version
 
   windows-cpu:
-    name: windows-x64 (CPU + Vulkan when the SDK is present)
+    name: windows-x64 (CPU + Vulkan)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          curl.exe -sL -o "$env:RUNNER_TEMP/vulkan-sdk.exe" `
+            https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe
+          & "$env:RUNNER_TEMP/vulkan-sdk.exe" --accept-licenses --default-answer --confirm-command install
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory |
+            Sort-Object Name | Select-Object -Last 1
+          if (-not $sdk) {
+            throw "Vulkan SDK installer produced no C:\VulkanSDK\<version> directory"
+          }
+          "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
+          "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
 
       - name: Detect Vulkan SDK
         id: vulkan

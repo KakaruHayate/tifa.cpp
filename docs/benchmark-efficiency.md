@@ -4,11 +4,11 @@
 
 | engine | backend | dtype | ms / file | × realtime | model load |
 |---|---|---|---|---|---|
-| tifa_ggml | cpu | F16 | 5456 | 1.1× | 1.93 s |
-| tifa_ggml | cpu | Q4_0 | 5619 | 1.1× | 1.63 s |
-| tifa_ggml | vulkan | F16 | 3312 | 1.9× | 2.39 s |
-| tifa_ggml | vulkan | Q4_0 | 3326 | 1.9× | 1.90 s |
-| PyTorch | cpu | F32 | 389 | 15.9× | 1.73 s |
-| PyTorch | cuda | F32 | 230 | 26.9× | 2.15 s |
+| tifa_ggml | cpu | F16 | 2441 | 2.5× | 0.75 s |
+| tifa_ggml | cpu | Q4_0 | 2505 | 2.5× | 0.94 s |
+| tifa_ggml | vulkan | F16 | 175 | 35.4× | 1.02 s |
+| tifa_ggml | vulkan | Q4_0 | 178 | 34.7× | 0.80 s |
+| PyTorch | cpu | F32 | 360 | 17.2× | 2.87 s |
+| PyTorch | cuda | F32 | 232 | 26.6× | 1.85 s |
 
 × realtime = audio seconds per wall-clock second (higher is better).
