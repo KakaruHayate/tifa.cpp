@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['ui/**', '**/*.md']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-cpu:
+    name: linux-x64 (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vulkan headers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvulkan-dev glslc
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTIFA_GGML_VULKAN=ON
+          -DTIFA_GGML_BUILD_TESTS=ON
+          -DTIFA_GGML_BUILD_CLI=ON
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Smoke test (inspect the reference model if provided)
+        run: build/bin/tifa_ggml_cli --version
+
+  windows-cpu:
+    name: windows-x64 (CPU + Vulkan when the SDK is present)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect Vulkan SDK
+        id: vulkan
+        shell: pwsh
+        run: |
+          if ($env:VULKAN_SDK -and (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h")) {
+            "flag=-DTIFA_GGML_VULKAN=ON" >> $env:GITHUB_OUTPUT
+            Write-Host "Vulkan SDK: $env:VULKAN_SDK"
+          } else {
+            "flag=-DTIFA_GGML_VULKAN=OFF" >> $env:GITHUB_OUTPUT
+            Write-Host "no Vulkan SDK on this runner; building CPU-only"
+          }
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          ${{ steps.vulkan.outputs.flag }}
+          -DTIFA_GGML_BUILD_TESTS=ON
+          -DTIFA_GGML_BUILD_CLI=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
+
+      - name: Version
+        run: build/bin/tifa_ggml_cli.exe --version
+
+  ui:
+    name: ui (electron smoke test)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: npm ci
+      - name: Headless logic tests
+        run: node scripts/smoke-test.js

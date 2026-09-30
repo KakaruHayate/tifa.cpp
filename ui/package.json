@@ -1,0 +1,60 @@
+{
+  "name": "tifa-aligner-studio",
+  "version": "0.1.0",
+  "description": "TIFA (Token-Imputing Forced Aligner) desktop UI on ggml — import audio + phones, align, inspect and export TextGrid annotations",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "smoke": "node scripts/smoke-test.js",
+    "e2e": "electron scripts/e2e-electron.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "author": {
+    "name": "KakaruHayate",
+    "email": "kakaru@tifa-aligner-studio.invalid"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/KakaruHayate/tifa.cpp.git"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.kakaru.tifa-aligner",
+    "productName": "TIFA Aligner Studio",
+    "files": [
+      "src/**/*"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.music"
+    },
+    "linux": {
+      "maintainer": "KakaruHayate <kakaru@tifa-aligner-studio.invalid>",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "AudioVideo"
+    }
+  }
+}

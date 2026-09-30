@@ -1,0 +1,13 @@
+{
+  "_comment": "Q4_0 for every 2-D matmul weight; norms, LayerScale, depthwise conv kernels and all biases stay F32 (convert_tifa_to_gguf.f32_only). Measured on the sample dataset: 28.3 MB, boundary MAE 5.39 ms vs 5.45 ms for F32 - see docs/quant-matrix.md.",
+  "rules": [
+    { "pattern": "backbone.layers.*.ffn1_*.ln*.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.layers.*.ffn2_*.ln*.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.layers.*.attn.jattn.*.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.layers.*.attn.merge_linear_*.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.layers.*.attn.c_*.pw*.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.audio_input_proj.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.text_input_proj.weight", "dtype": "q4_0" },
+    { "pattern": "backbone.output_proj_*.weight", "dtype": "q4_0" }
+  ]
+}

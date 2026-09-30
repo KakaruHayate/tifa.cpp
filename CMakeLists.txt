@@ -1,0 +1,170 @@
+cmake_minimum_required(VERSION 3.18)
+project(tifa_ggml
+    VERSION 0.1.0
+    DESCRIPTION "TIFA (Token-Imputing Forced Aligner) native ggml inference backend"
+    LANGUAGES C CXX)
+
+# -----------------------------------------------------------------------------
+# Options
+# -----------------------------------------------------------------------------
+option(TIFA_GGML_CUDA        "Enable ggml CUDA backend"     OFF)
+option(TIFA_GGML_VULKAN      "Enable ggml Vulkan backend"   OFF)
+option(TIFA_GGML_BUILD_CLI   "Build tifa_ggml_cli executable"   ON)
+option(TIFA_GGML_BUILD_TESTS "Build unit tests (requires GoogleTest via FetchContent)" OFF)
+# Optional: use ggml-llamafile's tuned sgemm kernels for CPU mul_mat
+# (Q8_0/F32/BF16, AVX2+).  Off yields the stock ggml vec-dot kernels.
+option(TIFA_GGML_LLAMAFILE   "Enable ggml-llamafile sgemm kernels (CPU)" ON)
+
+# On Apple, default to Metal backend on. Use TIFA_GGML_METAL to override.
+if(APPLE)
+    option(TIFA_GGML_METAL "Enable ggml Metal backend" ON)
+else()
+    option(TIFA_GGML_METAL "Enable ggml Metal backend" OFF)
+endif()
+
+# -----------------------------------------------------------------------------
+# Global settings
+# -----------------------------------------------------------------------------
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+if(MSVC)
+    foreach(_cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
+        string(TOUPPER "${_cfg}" _CFG)
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}/bin")
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}/bin")
+        set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}/lib")
+    endforeach()
+    # NVCC treats a bare /utf-8 as an input path. Keep this MSVC option on
+    # native C/C++ sources; CUDA sources already contain ASCII identifiers.
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>)
+endif()
+
+if(MSVC)
+    set(TIFA_GGML_WARN_FLAGS /W3 /wd4244 /wd4267 /wd4996)
+else()
+    set(TIFA_GGML_WARN_FLAGS -Wall -Wextra -Wno-unused-parameter)
+endif()
+
+# -----------------------------------------------------------------------------
+# Dependencies (ggml via FetchContent, plus optional Metal patch)
+# -----------------------------------------------------------------------------
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Dependencies.cmake)
+
+# -----------------------------------------------------------------------------
+# Core library: tifa_ggml
+# -----------------------------------------------------------------------------
+# NOTE: sources are added as the port progresses; every listed file must exist.
+set(TIFA_GGML_CORE_SOURCES
+    src/backend.cpp
+    src/gguf_io.cpp
+    src/json.cpp
+    src/tensor_utils.cpp
+    src/ops_basic.cpp
+    src/ops_ffn.cpp
+    src/ops_rope.cpp
+    src/ops_attn.cpp
+    src/ops_jebf.cpp
+    src/model_tifa.cpp
+    src/mel.cpp
+    src/audio_io.cpp
+    src/resample.cpp
+    src/align_decode.cpp
+    src/metrics.cpp
+    src/textgrid.cpp
+    src/g2p/pinyin_engine.cpp
+    src/g2p/pipeline.cpp
+    src/g2p/encoding.cpp
+    src/g2p/select.cpp
+)
+
+add_library(tifa_ggml STATIC ${TIFA_GGML_CORE_SOURCES})
+add_library(tifa_ggml::tifa_ggml ALIAS tifa_ggml)
+
+target_include_directories(tifa_ggml
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# ggml targets exported by the FetchContent'd ggml source tree.
+# v0.11.0 provides `ggml` as the umbrella interface target.
+target_link_libraries(tifa_ggml
+    PUBLIC  ggml
+    PRIVATE pocketfft
+    PRIVATE dr_wav          # dr_libs headers (dr_wav / dr_flac / dr_mp3)
+)
+
+target_compile_options(tifa_ggml PRIVATE ${TIFA_GGML_WARN_FLAGS})
+target_compile_definitions(tifa_ggml PUBLIC
+    TIFA_GGML_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    TIFA_GGML_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    TIFA_GGML_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
+
+# Propagate optional-backend feature macros so consumers can branch on them.
+if(TIFA_GGML_METAL)
+    target_compile_definitions(tifa_ggml PUBLIC TIFA_GGML_HAS_METAL=1)
+endif()
+if(TIFA_GGML_CUDA)
+    target_compile_definitions(tifa_ggml PUBLIC TIFA_GGML_HAS_CUDA=1)
+endif()
+if(TIFA_GGML_VULKAN)
+    target_compile_definitions(tifa_ggml PUBLIC TIFA_GGML_HAS_VULKAN=1)
+endif()
+
+# -----------------------------------------------------------------------------
+# CLI executable
+# -----------------------------------------------------------------------------
+if(TIFA_GGML_BUILD_CLI)
+    add_executable(tifa_ggml_cli
+        src/cli/main.cpp
+        src/cli/phone_input.cpp
+    )
+    target_include_directories(tifa_ggml_cli PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(tifa_ggml_cli PRIVATE
+        tifa_ggml::tifa_ggml
+        dr_wav
+    )
+    target_compile_options(tifa_ggml_cli PRIVATE ${TIFA_GGML_WARN_FLAGS})
+endif()
+
+# -----------------------------------------------------------------------------
+# Tests (optional)
+# -----------------------------------------------------------------------------
+if(TIFA_GGML_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# -----------------------------------------------------------------------------
+# Install (minimal; mainly so consumers can embed via add_subdirectory)
+# -----------------------------------------------------------------------------
+install(DIRECTORY include/tifa_ggml
+        DESTINATION include
+        FILES_MATCHING PATTERN "*.h")
+
+install(TARGETS tifa_ggml
+        EXPORT tifa_ggml-targets
+        ARCHIVE DESTINATION lib
+        LIBRARY DESTINATION lib
+        RUNTIME DESTINATION bin)
+
+message(STATUS "")
+message(STATUS "tifa_ggml ${PROJECT_VERSION} configuration:")
+message(STATUS "  Metal .............. ${TIFA_GGML_METAL}")
+message(STATUS "  CUDA ............... ${TIFA_GGML_CUDA}")
+message(STATUS "  Vulkan ............. ${TIFA_GGML_VULKAN}")
+message(STATUS "  Build CLI .......... ${TIFA_GGML_BUILD_CLI}")
+message(STATUS "  Build Tests ........ ${TIFA_GGML_BUILD_TESTS}")
+message(STATUS "")

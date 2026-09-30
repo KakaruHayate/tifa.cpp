@@ -1,0 +1,129 @@
+name: Release
+
+# Builds the Windows dataset-annotation bundle:
+#   tifa_ggml_cli.exe + ggml DLLs + Q4_0 model + G2P dictionaries + the
+#   Electron UI, all in one zip.
+#
+# Triggered by a v* tag, or manually (workflow_dispatch).  Manual runs publish
+# to the `edge` release so a bundle is always available without tagging.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-bundle:
+    name: windows-x64 bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect Vulkan SDK
+        id: vulkan
+        shell: pwsh
+        run: |
+          if ($env:VULKAN_SDK -and (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h")) {
+            "flag=-DTIFA_GGML_VULKAN=ON" >> $env:GITHUB_OUTPUT
+          } else {
+            "flag=-DTIFA_GGML_VULKAN=OFF" >> $env:GITHUB_OUTPUT
+            Write-Host "::warning::no Vulkan SDK on the runner - the bundle is CPU-only"
+          }
+
+      - name: Configure
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          ${{ steps.vulkan.outputs.flag }}
+          -DTIFA_GGML_BUILD_CLI=ON
+          -DTIFA_GGML_BUILD_TESTS=OFF
+
+      - name: Build engine
+        run: cmake --build build --config Release
+
+      # ---- model -----------------------------------------------------------
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install conversion deps
+        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf
+
+      - name: Download the TIFA-1.0-ST checkpoint
+        shell: pwsh
+        run: |
+          curl.exe -sL -o TIFA-1.0-ST.zip `
+            https://github.com/openvpi/TIFA/releases/download/v1.0.0/TIFA-1.0-ST.zip
+          Expand-Archive TIFA-1.0-ST.zip -DestinationPath model_src
+
+      - name: Convert to Q4_0 GGUF
+        run: >
+          python scripts/convert_tifa_to_gguf.py
+          --model-dir model_src/TIFA-1.0-ST
+          -o tifa-1.0-st-q4_0.gguf --dtype f16
+          --quant-config scripts/quant_q4_all.json
+
+      # ---- UI --------------------------------------------------------------
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build the Electron app
+        working-directory: ui
+        run: |
+          npm ci
+          npx electron-builder --win --dir
+
+      # ---- assemble --------------------------------------------------------
+      - name: Assemble the bundle
+        shell: pwsh
+        run: |
+          $root = "bundle/tifa-aligner-studio"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          # Electron app (unpacked) at the top level ...
+          Copy-Item -Recurse -Force "ui/dist/win-unpacked/*" $root
+
+          # ... the engine beside it, where the UI looks for it ...
+          Copy-Item -Force build/bin/tifa_ggml_cli.exe $root
+          Copy-Item -Force build/bin/*.dll $root
+
+          # ... and the model + dictionaries under models/.
+          New-Item -ItemType Directory -Force -Path "$root/models" | Out-Null
+          Copy-Item -Force tifa-1.0-st-q4_0.gguf "$root/models/"
+          Copy-Item -Recurse -Force dicts/* "$root/models/"
+
+          Copy-Item -Force README.md "$root/README.md"
+          @"
+          TIFA Aligner Studio - quick start
+          =================================
+          1. Run "TIFA Aligner Studio.exe".
+          2. Pick the model:  models/tifa-1.0-st-q4_0.gguf
+             (the G2P dictionaries next to it are picked up automatically).
+          3. Import audio files or a folder, choose the text / phones source,
+             then Run.  TextGrids land in the output directory.
+
+          tifa_ggml_cli.exe is the engine; `tifa_ggml_cli.exe --help` lists the
+          CLI options (align / inspect / breathe).
+          "@ | Set-Content "$root/README.txt"
+
+          Compress-Archive -Path "$root/*" -DestinationPath tifa-aligner-studio-windows-x64.zip
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tifa-aligner-studio-windows-x64
+          path: tifa-aligner-studio-windows-x64.zip
+          retention-days: 14
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'edge' }}
+          name: ${{ github.ref_type == 'tag' && github.ref_name || 'edge build' }}
+          files: tifa-aligner-studio-windows-x64.zip
+          generate_release_notes: true
+          prerelease: ${{ github.ref_type != 'tag' }}
