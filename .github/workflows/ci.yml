@@ -87,11 +87,15 @@ jobs:
           - os: ubuntu-22.04
             name: linux-x64-cuda
             backend: cuda
-            # CUDA 12.9 + SASS for Turing→Hopper plus Blackwell PTX, same arch
-            # policy as game.cpp: RTX 50-series JIT to native instead of
-            # falling back to compute_75 PTX.
-            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"'
-            build_jobs: 2
+            # COMPILE-ONLY gate: hosted runners have no NVIDIA driver, so the
+            # job proves the CUDA backend builds, nothing more (see the
+            # "Version smoke" step).  One generic PTX target is enough for
+            # that and keeps nvcc under ~20 min; game.cpp's fuller SASS list
+            # (75;80;86;89;90;120-virtual) is what a *shipping* CUDA binary
+            # wants -- take it from there if the release ever bundles CUDA,
+            # or just build locally with -DCMAKE_CUDA_ARCHITECTURES=native.
+            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75-virtual"'
+            build_jobs: 4
 
           - os: macos-14
             name: macos-arm64-metal
@@ -120,8 +124,9 @@ jobs:
           - os: windows-2022
             name: windows-x64-cuda
             backend: cuda
-            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"'
-            build_jobs: 2
+            # Compile-only gate, same single-PTX policy as linux-x64-cuda.
+            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75-virtual"'
+            build_jobs: 4
 
     defaults:
       run:
