@@ -277,6 +277,29 @@ function registerIpc() {
     return { ok: true, modelPath };
   });
 
+  // --- model autodetection (release-bundle layout) ------------------------
+  // The shipped bundles carry the weights under <app dir>/models/; point the
+  // UI at them automatically so a fresh install needs no configuration.
+  // Breath models are recognised by name, the aligner is whatever remains.
+  handle('model:autodetect', (e, dirOverride) => {
+    const dirs = [];
+    if (dirOverride) dirs.push(dirOverride);
+    const exeDir = path.dirname(app.getPath('exe'));
+    dirs.push(path.join(exeDir, 'models'));
+    dirs.push(path.join(APP_ROOT, '..', 'models'));
+    dirs.push(path.join(process.cwd(), 'models'));
+    for (const dir of dirs) {
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch { continue; }
+      const ggufs = names.filter(n => /\.gguf$/i.test(n)).map(n => path.join(dir, n));
+      if (!ggufs.length) continue;
+      const breath = ggufs.find(p => /breath|fbl|ap[_-]?det/i.test(path.basename(p))) || null;
+      const aligner = ggufs.find(p => p !== breath) || null;
+      if (aligner || breath) return { ok: true, dir, aligner, breath };
+    }
+    return { ok: false, error: 'no models/*.gguf beside the app' };
+  });
+
   // --- breath (FBL) model -------------------------------------------------
   handle('breath:pick', async () => {
     const r = await dialog.showOpenDialog({

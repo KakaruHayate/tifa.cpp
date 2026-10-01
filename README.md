@@ -6,7 +6,7 @@ Vulkan, Metal or CUDA with no Python at runtime, and ships with **TIFA Label**,
 a desktop tool for the full dataset pipeline: TIFA align → FBL breath AP/SP →
 2PASS re-align.
 
-> [中文说明](README_CN.md) · dataset workflow: [docs/dataset-workflow.md](docs/dataset-workflow.md)
+> [中文说明](README_CN.md) · dataset workflow: [docs/dataset-workflow.md](docs/dataset-workflow.md) · bundled usage guide (bilingual): [docs/usage.md](docs/usage.md)
 
 ## What it does
 
@@ -116,7 +116,8 @@ pipeline in one batch run per file:
    phones tier → (optional) 2PASS re-align.
 
 Per-file status/agreement, progress, streaming log, cancel.  The UI is in
-Chinese.
+Chinese.  Release bundles need no configuration: the engine and models sit at
+the default relative paths beside the app and are imported automatically.
 
 ## Layout
 

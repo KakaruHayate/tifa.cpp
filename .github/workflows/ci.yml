@@ -1,17 +1,16 @@
 name: ci
 
 # Build + test matrix, mirroring game.cpp: every platform × backend the project
-# supports, on the ggml v0.19.0 anchor.
+# supports, on the ggml v0.19.0 anchor.  CUDA has its own (slow, nightly)
+# workflow in cuda.yml -- it never blocks this matrix.
 #
 #   linux-x64-cpu      — Ubuntu, CPU (GGML_NATIVE + llamafile sgemm), unit tests
 #                        and an end-to-end align smoke on the real model
 #   linux-x64-vulkan   — Ubuntu, Vulkan backend
-#   linux-x64-cuda     — Ubuntu 22.04, CUDA backend (CUDA 12.9)
 #   macos-arm64-metal  — Apple Silicon, Metal backend
 #   macos-x64-metal    — Intel Mac, Metal backend (cross-compiled on ARM runner)
 #   windows-x64-cpu    — Windows, CPU
 #   windows-x64-vulkan — Windows, Vulkan backend (SDK installed by the job)
-#   windows-x64-cuda   — Windows Server 2022, CUDA backend (CUDA 12.9)
 #
 # The prepare-model job converts the released TIFA-1.0-ST checkpoint once; the
 # CPU job turns it into a real inference smoke test (align a synthetic wave
@@ -84,19 +83,6 @@ jobs:
             cmake_extra: "-DTIFA_GGML_VULKAN=ON"
             build_jobs: 4
 
-          - os: ubuntu-22.04
-            name: linux-x64-cuda
-            backend: cuda
-            # COMPILE-ONLY gate: hosted runners have no NVIDIA driver, so the
-            # job proves the CUDA backend builds, nothing more (see the
-            # "Version smoke" step).  One generic PTX target is enough for
-            # that and keeps nvcc under ~20 min; game.cpp's fuller SASS list
-            # (75;80;86;89;90;120-virtual) is what a *shipping* CUDA binary
-            # wants -- take it from there if the release ever bundles CUDA,
-            # or just build locally with -DCMAKE_CUDA_ARCHITECTURES=native.
-            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75-virtual"'
-            build_jobs: 4
-
           - os: macos-14
             name: macos-arm64-metal
             backend: metal
@@ -119,13 +105,6 @@ jobs:
             name: windows-x64-vulkan
             backend: vulkan
             cmake_extra: "-DTIFA_GGML_VULKAN=ON"
-            build_jobs: 4
-
-          - os: windows-2022
-            name: windows-x64-cuda
-            backend: cuda
-            # Compile-only gate, same single-PTX policy as linux-x64-cuda.
-            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75-virtual"'
             build_jobs: 4
 
     defaults:
@@ -160,27 +139,9 @@ jobs:
         if: matrix.backend == 'vulkan' && runner.os == 'macOS'
         run: brew install vulkan-sdk
 
-      - name: Install CUDA Toolkit (Linux)
-        if: matrix.backend == 'cuda' && runner.os == 'Linux'
-        uses: Jimver/cuda-toolkit@v0.2.29
-        with:
-          cuda: "12.9.0"
-          method: network
-          log-file-suffix: "${{ matrix.name }}.txt"
-
-      - name: Install CUDA Toolkit (Windows)
-        if: matrix.backend == 'cuda' && runner.os == 'Windows'
-        uses: Jimver/cuda-toolkit@v0.2.29
-        with:
-          cuda: "12.9.0"
-          method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
-          log-file-suffix: "${{ matrix.name }}.txt"
-
       - name: Verify shader/compiler toolchains
         run: |
           if [ "${{ matrix.backend }}" = "vulkan" ]; then glslc --version; fi
-          if [ "${{ matrix.backend }}" = "cuda" ]; then nvcc --version; fi
 
       - name: Cache CMake FetchContent
         # GGML_NATIVE builds bake the runner CPU into object code; never restore
@@ -217,13 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -la build/bin/
-          if [ "${{ runner.os }}" = "Windows" ] && [ "${{ matrix.backend }}" = "cuda" ]; then
-            # ggml-cuda.dll imports nvcuda.dll (the NVIDIA driver), which the
-            # hosted runner does not have; --version cannot start there.
-            echo "no NVIDIA driver on this runner; skipping the startup smoke"
-          else
-            build/bin/tifa_ggml_cli${{ runner.os == 'Windows' && '.exe' || '' }} --version
-          fi
+          build/bin/tifa_ggml_cli${{ runner.os == 'Windows' && '.exe' || '' }} --version
 
       - name: Download model artifact
         if: matrix.backend == 'cpu' && runner.os != 'Windows'

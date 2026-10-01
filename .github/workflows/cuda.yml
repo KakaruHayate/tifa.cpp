@@ -1,0 +1,114 @@
+name: cuda
+
+# CUDA lives on its own schedule: the full game.cpp-style SASS+PTX arch list
+# costs tens of minutes per target to compile, and the hosted runners have no
+# NVIDIA driver so the binaries cannot even be executed there (the jobs prove
+# compilation only).  Keeping it out of ci.yml means a slow or broken CUDA
+# build never blocks the main matrix; failures here are informational.
+#
+# Triggers: nightly, manual, and release tags (so a tag always gets a fresh
+# CUDA compile attempt next to the shipped bundles).
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Nightly, off the hour to avoid the cron stampede.
+    - cron: '17 3 * * *'
+  push:
+    tags: ['v*']
+
+jobs:
+  build-cuda:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux-x64-cuda
+          - os: windows-2022
+            name: windows-x64-cuda
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install CUDA Toolkit (Linux)
+        if: runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: "12.9.0"
+          method: network
+          log-file-suffix: "${{ matrix.name }}.txt"
+
+      - name: Install CUDA Toolkit (Windows)
+        if: runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: "12.9.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          log-file-suffix: "${{ matrix.name }}.txt"
+
+      - name: Verify CUDA compiler
+        run: nvcc --version
+
+      - name: Cache CMake FetchContent
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ matrix.name }}-deps-v1-${{ hashFiles('cmake/Dependencies.cmake') }}
+          restore-keys: |
+            ${{ matrix.name }}-deps-v1-
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DTIFA_GGML_BUILD_CLI=ON \
+                -DTIFA_GGML_BUILD_TESTS=OFF \
+                -DTIFA_GGML_CUDA=ON \
+                -DGGML_NATIVE=OFF \
+                -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"
+
+      - name: Build
+        # nvcc expands dozens of template instances per file; cap parallelism
+        # so the runner's memory survives (same policy as game.cpp).
+        run: cmake --build build --parallel 2 --config Release
+
+      - name: Version smoke
+        run: |
+          set -euo pipefail
+          ls -la build/bin/
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # ggml-cuda.dll imports nvcuda.dll (the NVIDIA driver), which the
+            # hosted runner does not have; startup is impossible there.
+            echo "no NVIDIA driver on this runner; compile is the verification"
+          else
+            build/bin/tifa_ggml_cli --version || echo "startup needs the driver; compile is the verification"
+          fi
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          PKG="tifa_ggml-${{ matrix.name }}"
+          mkdir -p "$PKG"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/bin/tifa_ggml_cli.exe "$PKG/"
+            find build/bin -maxdepth 1 -name '*.dll' -exec cp {} "$PKG/" \;
+          else
+            cp build/bin/tifa_ggml_cli "$PKG/"
+            find build/bin -maxdepth 1 -name '*.so*' -exec cp {} "$PKG/" \;
+          fi
+          tar -czf "$PKG.tar.gz" "$PKG"
+          ls -la "$PKG.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-bundle
+          path: tifa_ggml-${{ matrix.name }}.tar.gz
+          retention-days: 14

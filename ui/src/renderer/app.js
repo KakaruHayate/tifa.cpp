@@ -143,7 +143,7 @@ async function detectCli(quiet) {
 }
 
 async function loadModel(modelPath, quiet) {
-  if (!modelPath) return;
+  if (!modelPath) return false;
   S.modelPath = modelPath;
   const r = await api.modelInfo(modelPath);
   if (r.ok) {
@@ -155,26 +155,30 @@ async function loadModel(modelPath, quiet) {
     if (num) bits.push(`${(Number(num) / 1e6).toFixed(1)}M 参数`);
     setStatus('model-status', 'modelDot', '对齐模型 ' + bits.join(' · ') + '：' + P.baseName(modelPath), 'ok');
     $('btn-inspect').disabled = !S.cliPath;
-  } else {
-    setStatus('model-status', 'modelDot', '模型不可用：' + (r.error || ''), 'bad');
-    if (!quiet) log('模型信息读取失败：' + (r.error || ''));
+    refreshRunReady();
+    return true;
   }
+  setStatus('model-status', 'modelDot', '模型不可用：' + (r.error || ''), 'bad');
+  if (!quiet) log('模型信息读取失败：' + (r.error || ''));
   refreshRunReady();
+  return false;
 }
 
 async function loadBreathModel(modelPath, quiet) {
-  if (!modelPath) return;
+  if (!modelPath) return false;
   S.breathModel = modelPath;
   const r = await api.modelInfo(modelPath);
   if (r.ok) {
     const f = r.fields || [];
     const arch = (f.find(v => /general\.architecture/.test(v.key)) || {}).value || '?';
     setStatus('breath-status', 'breathDot', `呼吸模型 ${arch}：` + P.baseName(modelPath), 'ok');
-  } else {
-    setStatus('breath-status', 'breathDot', '呼吸模型不可用：' + (r.error || ''), 'bad');
-    if (!quiet) log('呼吸模型信息读取失败：' + (r.error || ''));
+    refreshRunReady();
+    return true;
   }
+  setStatus('breath-status', 'breathDot', '呼吸模型不可用：' + (r.error || ''), 'bad');
+  if (!quiet) log('呼吸模型信息读取失败：' + (r.error || ''));
   refreshRunReady();
+  return false;
 }
 
 async function runInspect() {
@@ -552,8 +556,29 @@ window.TifaLabel = {
   applyConfig(cfg.config || {});
   refreshSourceUI();
   await detectCli(true);
-  if (cfg.config && cfg.config.modelPath) await loadModel(cfg.config.modelPath, true);
-  if (cfg.config && cfg.config.breathModel) await loadBreathModel(cfg.config.breathModel, true);
+  const conf = cfg.config || {};
+  const haveModel = conf.modelPath ? await loadModel(conf.modelPath, true) : false;
+  const haveBreath = conf.breathModel ? await loadBreathModel(conf.breathModel, true) : false;
+
+  // 发布包布局：模型就在程序旁边的 models/ 里；没配置过（或配置已失效）时
+  // 直接按默认相对路径导入，用户不需要手动选择。
+  if (!haveModel || !haveBreath) {
+    const auto = await api.modelAutodetect();
+    if (auto.ok) {
+      if (!haveModel && auto.aligner) {
+        await loadModel(auto.aligner, true);
+        await api.setModel(auto.aligner);
+        log('已按默认路径导入对齐模型：' + auto.aligner);
+      }
+      if (!haveBreath && auto.breath) {
+        await loadBreathModel(auto.breath, true);
+        await api.setBreathModel(auto.breath);
+        log('已按默认路径导入呼吸模型：' + auto.breath);
+      }
+    } else if (!haveModel) {
+      log('未在默认路径找到模型（' + auto.error + '），请手动选择。');
+    }
+  }
   if (cfg.config && cfg.config.csvPath) {
     const el = $('csv-status');
     el.dataset.path = cfg.config.csvPath;

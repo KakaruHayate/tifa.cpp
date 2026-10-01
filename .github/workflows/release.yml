@@ -56,6 +56,21 @@ jobs:
             -o tifa-1.0-st-q4_0.gguf --dtype f16 \
             --quant-config scripts/quant_q4_all.json
 
+      - name: Download the BreathLab source zip (published on the edge release)
+        # Tolerant: the zip is a model-source upload, not a repo file.  When it
+        # is missing the bundles simply ship without a breath model and the
+        # quick-start keeps pointing at scripts/convert_breath_to_gguf.py.
+        continue-on-error: true
+        run: |
+          curl -sL -o breathlab.zip             https://github.com/${{ github.repository }}/releases/download/edge/breathLab_models_dml.zip
+          unzip -q -o breathlab.zip -d breathlab_src
+
+      - name: Convert the breath/AP detector (FBL)
+        continue-on-error: true
+        run: |
+          python scripts/convert_breath_to_gguf.py             --model-dir breathlab_src/models_dml --name v5_24k             -o breath-v5-24k-f16.gguf
+          ls -la breath-v5-24k-f16.gguf
+
       - name: Convert the English LSTM G2P (OOV inference for the en converter)
         run: |
           python scripts/convert_lstm_g2p_to_gguf.py             --model-dir model_src/TIFA-1.0-ST/assets/LstmG2p-Eng             -o lstm-g2p-eng.gguf
@@ -74,6 +89,8 @@ jobs:
             tifa-1.0-st-f16.gguf
             tifa-1.0-st-q4_0.gguf
             lstm-g2p-eng.gguf
+            breath-v5-24k-f16.gguf
+          if-no-files-found: warn
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -168,14 +185,23 @@ jobs:
             # The English converter's model_path is @assets/LstmG2p-Eng; the
             # converted GGUF lands beside that name so it resolves.
             cp lstm-g2p-eng.gguf "$PKG/models/assets/LstmG2p-Eng.gguf" 2>/dev/null || true
+            # FBL breath model, converted from the BreathLab source zip that
+            # ships beside these bundles (absent when that download failed).
+            cp breath-v5-24k-f16.gguf "$PKG/models/" 2>/dev/null || true
+            cp docs/usage.md "$PKG/USAGE.md"
             cat > "$PKG/README.txt" <<EOF
           tifa_ggml_cli -- TIFA forced aligner (see the repository README)
           Bundled model: $MODEL ($PREC precision), dictionaries under models/.
 
           Quick start:
             tifa_ggml_cli align song.wav -m models/tifa.gguf --text-file song.txt -o out
-            tifa_ggml_cli breathe song.wav -m models/breath.gguf --merge out -o out   # 2PASS step 2
-            tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -o out2   # 2PASS step 3
+            tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
+            tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -o out2
+
+          The breathe/2PASS steps need the FBL breath model; when this bundle has
+          no models/breath-*.gguf, convert it from the BreathLab source zip that
+          is published next to this archive:
+            python scripts/convert_breath_to_gguf.py --model-dir models_dml --name v5_24k -o breath.gguf
 
           The full workflow (TIFA -> FBL -> 2PASS) is documented in
           docs/dataset-workflow.md.
@@ -265,16 +291,22 @@ jobs:
           Copy-Item -Recurse -Force dicts/cpp_pinyin "$root/models/"
           # English OOV model (model_path @assets/LstmG2p-Eng in the GGUF).
           Copy-Item -Force lstm-g2p-eng.gguf "$root/models/assets/LstmG2p-Eng.gguf"
+          # FBL breath model (absent when the source download failed).
+          if (Test-Path breath-v5-24k-f16.gguf) {
+            Copy-Item -Force breath-v5-24k-f16.gguf "$root/models/"
+          }
 
-          Copy-Item -Force README.md "$root/README.md"
+          Copy-Item -Force docs/usage.md "$root/USAGE.md"
           @"
           TIFA Label - quick start (dataset annotation)
           =============================================
           1. Run "TIFA Label.exe".
           2. Pick the aligner model:  models/tifa-1.0-st-q4_0.gguf
              (the G2P dictionaries next to it are picked up automatically).
-             For the breath/2PASS stages, point the tool at an FBL breath GGUF
-             (scripts/convert_breath_to_gguf.py converts the BreathLab ONNX).
+             For the breath/2PASS stages pick the bundled breath model:
+             models/breath-v5-24k-f16.gguf (if missing, convert the BreathLab
+             source zip published beside this archive:
+             scripts/convert_breath_to_gguf.py).
           3. Import audio files or a folder, choose the annotation source
              (text/G2P or existing phones), enable the breath/2PASS stages,
              then run.  TextGrids land in the output directory.

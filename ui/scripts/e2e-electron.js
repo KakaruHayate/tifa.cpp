@@ -38,6 +38,17 @@ require('../src/main.js');                       // the real app
 // CPU align work, so the cancel reliably lands mid-run whatever the dataset
 // size is (the CI dataset is a single 3 s clip).
 const CANCEL_WAV = path.join(os.tmpdir(), 'tifa-e2e-cancel-probe.wav');
+// A fake release-bundle models/ dir for the autodetection check.
+const AUTO_DIR = path.join(os.tmpdir(), 'tifa-e2e-autodetect');
+function writeFakeModelDir() {
+  const dir = path.join(AUTO_DIR, 'models');
+  fs.mkdirSync(dir, { recursive: true });
+  for (const n of ['tifa-1.0-st-q4_0.gguf', 'breath-v5-24k-f16.gguf']) {
+    const f = path.join(dir, n);
+    if (!fs.existsSync(f)) fs.writeFileSync(f, 'not-a-real-gguf');
+  }
+  return dir;
+}
 function writeSineWav(file, seconds = 30, sr = 44100, hz = 220) {
   const n = Math.floor(sr * seconds);
   const data = Buffer.alloc(44 + n * 2);
@@ -120,6 +131,10 @@ const DRIVER = `(async () => {
       .then(t => t.ok && t.text.includes('name = "phones"')).catch(() => false));
   ` : `step('breathSkipped', 'TIFA_E2E_BREATH not set');`}
 
+  // --- bundle-layout model autodetection -----------------------------------
+  const auto = await window.bridge.modelAutodetect('${AUTO_DIR.replace(/\\/g, '/')}/models');
+  step('autodetect', auto);
+
   // --- cancel kills the running child --------------------------------------
   let cancel = null;
   try {
@@ -147,6 +162,7 @@ const DRIVER = `(async () => {
 app.whenReady().then(async () => {
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
   if (!fs.existsSync(CANCEL_WAV)) writeSineWav(CANCEL_WAV);
+  writeFakeModelDir();
   await wait(2500);                                   // let the renderer boot
   const win = BrowserWindow.getAllWindows()[0];
   if (!win) { console.log('no window'); app.exit(2); return; }
@@ -187,6 +203,11 @@ app.whenReady().then(async () => {
   }
 
   check('cancel killed the child', steps.cancel && steps.cancel.killed === true && steps.cancel.cancelled === true, steps.cancel);
+  check('bundle-layout models autodetected',
+        steps.autodetect && steps.autodetect.ok === true &&
+        /tifa-1\.0-st-q4_0\.gguf$/.test(steps.autodetect.aligner || '') &&
+        /breath-v5-24k-f16\.gguf$/.test(steps.autodetect.breath || ''),
+        steps.autodetect);
   check('no stray output next to the dataset',
         !fs.existsSync(path.join(path.dirname(path.join(DATASET, 'wavs', SAMPLE + '.wav')), 'out')),
         path.join(DATASET, 'wavs', 'out'));

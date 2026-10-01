@@ -4,7 +4,7 @@
 制作的多语言强制对齐器。支持 CPU / Vulkan / Metal / CUDA，运行时不需要 Python；
 附带桌面工具 **TIFA Label**（歌声数据集标注工具：导入音频 → 导出 TextGrid）。
 
-> English: [README.md](README.md) · 数据集总流程：[docs/dataset-workflow.md](docs/dataset-workflow.md)
+> English: [README.md](README.md) · 数据集总流程：[docs/dataset-workflow.md](docs/dataset-workflow.md) · 发布包使用说明（双语）：[docs/usage.md](docs/usage.md)
 
 ## 功能
 
@@ -120,7 +120,8 @@ tifa_ggml_cli inspect models/tifa.gguf
 3. **数据集流程**：第一遍对齐 →（可选）FBL 呼吸检测并合并 →（可选）2PASS。
 
 输出 TextGrid（可选附诊断 JSON），逐文件状态与进度、流式日志、可取消。
-界面为中文。
+界面为中文。发布包里引擎与模型都在程序旁的默认路径上，**开箱即用、无需配置**
+（只有把模型放在别处时才需要手动选择）。
 
 ## 目录结构
 
