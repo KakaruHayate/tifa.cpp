@@ -25,6 +25,10 @@ int main() {
         "<word text=\"重\" language=\"zh\" script=\"zhong\" phonemes=\"zh ong\"/>";
     check(looks_like_pfml(src), "looks_like_pfml: markup detected");
     check(!looks_like_pfml("plain prose, no tags"), "looks_like_pfml: prose rejected");
+    check(looks_like_pfml("<group script=\"a\" phonemes=\"a\"/>"),
+          "looks_like_pfml: group detected");
+    check(looks_like_pfml("<reading><path><group><phoneme>a</phoneme></group></path></reading>"),
+          "looks_like_pfml: reading/path detected");
 
     // --- PFML -> model ------------------------------------------------------
     std::vector<G2PWord> words = pipeline.convert_pfml(src, {});

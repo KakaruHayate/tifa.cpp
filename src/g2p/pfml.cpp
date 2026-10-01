@@ -118,6 +118,7 @@ struct Node {
     std::vector<std::string> phonemes;   // word / group attribute (split)
     bool has_phonemes = false;           // a `phonemes` attribute was present
     bool has_text_attr = false;          // a `text` attribute was present
+    bool has_script_attr = false;        // a `script` attribute was present
     std::vector<Node> children;
 };
 
@@ -207,7 +208,7 @@ private:
         const std::vector<Attr> attrs = attributes();
         for (const Attr & a : attrs) {
             if (a.name == "language")      node.language = a.value;
-            else if (a.name == "script")   node.script = a.value;
+            else if (a.name == "script") { node.script = a.value; node.has_script_attr = true; }
             else if (a.name == "symbol")   node.symbol = a.value;
             else if (a.name == "text")   { node.text = a.value; node.has_text_attr = true; }
             else if (a.name == "phonemes") {
@@ -330,7 +331,8 @@ std::string phoneme_of(const Node & node) {
 }
 
 // One <group> -> Group.  A missing `script` falls back to the phonemes joined
-// with single spaces (PFML 1.0 label filling).
+// with single spaces (PFML 1.0 label filling) — "missing", not "empty": an
+// explicit script="" is a value the author chose and is kept as written.
 Group group_of(const Node & node) {
     Group group;
     group.phonemes = node.phonemes;
@@ -339,7 +341,7 @@ Group group_of(const Node & node) {
         const std::string phoneme = phoneme_of(child);
         if (!phoneme.empty()) group.phonemes.push_back(phoneme);
     }
-    group.script = node.script.empty() ? join_with_spaces(group.phonemes) : node.script;
+    group.script = node.has_script_attr ? node.script : join_with_spaces(group.phonemes);
     return group;
 }
 
@@ -402,15 +404,18 @@ std::string phonemes_as_text(const std::vector<Reading> & readings) {
 }
 
 // A compact `<word ... script="x" phonemes="a b">` is one reading / one path /
-// one group; the script label falls back to the word text (the pre-existing
-// behaviour for this form).
-Word compact_word(const std::string & text, const std::string & language,
-                  const std::string & script, std::vector<std::string> phonemes) {
+// one group.  Both labels fall back only when their attribute was absent —
+// text to the phonemes, script to the text (the pre-existing behaviour for
+// this form) — so an explicit empty value survives a round trip.
+Word compact_word(const std::string & text, bool has_text,
+                  const std::string & language,
+                  const std::string & script, bool has_script,
+                  std::vector<std::string> phonemes) {
     Word word;
-    word.text = text.empty() ? join_with_spaces(phonemes) : text;
+    word.text = has_text ? text : join_with_spaces(phonemes);
     word.language = first_language_tag(language);
     Group group;
-    group.script   = script.empty() ? word.text : script;
+    group.script   = has_script ? script : word.text;
     group.phonemes = std::move(phonemes);
     word.readings = { Reading{ { Path{ std::move(group) } } } };
     return word;
@@ -469,14 +474,21 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                             const std::string phoneme = phoneme_of(child);
                             if (!phoneme.empty()) phonemes.push_back(phoneme);
                         }
-                        out.push_back(compact_word(inner, node.language, node.script,
+                        // The text is "present" when it came from either the
+                        // attribute or the character data; only a word with
+                        // neither falls back to its phonemes.
+                        const bool has_text = node.has_text_attr || !inner.empty();
+                        out.push_back(compact_word(inner, has_text, node.language,
+                                                   node.script, node.has_script_attr,
                                                    std::move(phonemes)));
                         break;
                     }
                     Word word;
                     word.language = first_language_tag(node.language);
                     word.readings = readings_of(node.children);
-                    word.text     = inner.empty() ? phonemes_as_text(word.readings) : inner;
+                    word.text     = (node.has_text_attr || !inner.empty())
+                                        ? inner
+                                        : phonemes_as_text(word.readings);
                     out.push_back(std::move(word));
                     break;
                 }
@@ -502,7 +514,8 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
 }  // namespace
 
 bool looks_like_pfml(const std::string & text) {
-    static const char * kNames[] = { "scope", "word", "phoneme", nullptr };
+    static const char * kNames[] = { "scope", "word", "reading", "path", "group",
+                                     "phoneme", nullptr };
     for (std::size_t i = 0; i + 1 < text.size(); ++i) {
         if (text[i] != '<') continue;
         std::size_t j = i + 1;

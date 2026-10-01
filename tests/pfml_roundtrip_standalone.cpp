@@ -166,6 +166,28 @@ int main() {
         check(words[0].readings[0].paths[0][0].script == "a b", "label fill: script joined");
     }
 
+    // 10. an explicit empty label is a value, not a missing one: the fill rules
+    //     must not overwrite it, or the round trip would invent content.
+    {
+        const std::string src =
+            "<word text=\"\" language=\"zh\" script=\"\" phonemes=\"a\"/>";
+        const std::vector<Word> words = convert_pfml(pipeline, src, {});
+        check(words[0].text.empty(), "explicit empty text is kept");
+        check(words[0].readings[0].paths[0][0].script.empty(), "explicit empty script is kept");
+        const std::string back = to_pfml(words);
+        check(back == src, "explicit empty labels round-trip");
+        if (back != src) std::cout << "      got: " << back << "\n";
+    }
+
+    // 11. every element the parser accepts must also be detected as PFML
+    {
+        check(looks_like_pfml(
+                  "<reading><path><group><phoneme>a</phoneme></group></path></reading>"),
+              "looks_like_pfml: reading/path/group are detected");
+        check(looks_like_pfml("<group script=\"a\" phonemes=\"a\"/>"),
+              "looks_like_pfml: a bare group is detected");
+    }
+
     std::cout << (failures == 0 ? "\nALL PASS\n" : "\nFAILURES\n");
     return failures == 0 ? 0 : 1;
 }
