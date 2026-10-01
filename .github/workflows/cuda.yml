@@ -14,6 +14,11 @@ name: cuda
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release to attach the packages to (default: the tag that triggered this run)'
+        required: false
+        type: string
   schedule:
     # Nightly, off the hour to avoid the cron stampede.
     - cron: '17 3 * * *'
@@ -28,6 +33,11 @@ jobs:
   build-cuda:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # Which release the packages belong to: the dispatch input when given (so a
+    # failed CUDA build can be retried hours later without re-tagging), else the
+    # tag that triggered the run.  Empty on the nightly -> nothing is published.
+    env:
+      RELEASE_TAG: ${{ inputs.release_tag != '' && inputs.release_tag || (github.ref_type == 'tag' && github.ref_name || '') }}
     strategy:
       fail-fast: false
       matrix:
@@ -108,15 +118,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # On a tag the release run starts at the same time, so give its model
-          # artifacts time to appear.  On the nightly there is normally no
-          # release run for this exact commit, so try once and move on rather
-          # than waiting out the whole window.
+          # When a target release is known, the release run starts at the same
+          # time as this one, so give its model artifacts time to appear.  On
+          # the nightly there is normally no release run at all, so try once and
+          # move on rather than waiting out the whole window.
           TRIES=1
-          if [ "${{ github.ref_type }}" = "tag" ]; then TRIES=40; fi
+          if [ -n "$RELEASE_TAG" ]; then TRIES=40; fi
           for i in $(seq 1 "$TRIES"); do
-            RUN=$(gh run list --workflow release.yml --commit "$GITHUB_SHA" \
-                    --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+            if [ -n "$RELEASE_TAG" ]; then
+              # The release run's head_branch is the tag name.
+              RUN=$(gh run list --workflow release.yml --branch "$RELEASE_TAG" \
+                      --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+            else
+              RUN=$(gh run list --workflow release.yml --commit "$GITHUB_SHA" \
+                      --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+            fi
             if [ -n "$RUN" ] && gh run download "$RUN" -n tifa-models -D models_out 2>/dev/null; then
               echo "models <- release run $RUN"
               break
@@ -138,6 +154,10 @@ jobs:
             LIBS=$(find build/bin -maxdepth 1 -name '*.so*')
           fi
 
+          # The matrix name already ends in -cuda, so strip it before building
+          # the asset name -- otherwise it reads tifa-cuda-linux-x64-cuda-full.
+          PLATFORM="${{ matrix.name }}"; PLATFORM="${PLATFORM%-cuda}"
+
           BASE="tifa_ggml-${{ matrix.name }}"
           mkdir -p "$BASE"
           cp "build/bin/$ENGINE" "$BASE/"
@@ -149,7 +169,7 @@ jobs:
           else
             for PREC in full q4; do
               if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
-              B="tifa-cuda-${{ matrix.name }}-$PREC"
+              B="tifa-cuda-$PLATFORM-$PREC"
               rm -rf "$B"; cp -r "$BASE" "$B"
               # Same layout the release bundles use: the GGUF's @dictionaries/
               # and @assets/ paths resolve against models/.
@@ -173,10 +193,11 @@ jobs:
 
       - name: Attach the CUDA packages to the release
         # The release is already published by now (it does not wait for CUDA);
-        # this appends the CUDA packages to it.
-        if: github.ref_type == 'tag'
+        # this appends the CUDA packages to it.  Skipped on the nightly, where
+        # there is no release to attach to.
+        if: env.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: dist/*.tar.gz
           fail_on_unmatched_files: true
