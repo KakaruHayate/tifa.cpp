@@ -167,6 +167,11 @@ order), `spans` **exactly equal**.
   ErrorIncompatibleDriver` 且**没有** "vulkan backend init failed" 那行。
   验证方法：`VK_ICD_FILENAMES=C:/nonexistent.json tifa_ggml_cli inspect <模型>`
   应当回退到 CPU 并成功。
+- **MSVC 运行时 DLL 必须随包**（CMakeLists 里 `InstallRequiredSystemLibraries`
+  把 `msvcp140*.dll`/`vcruntime140*.dll` 拷进 `build/bin`）：引擎是 `/MD`，
+  干净 Windows 上没有这些 DLL 就起不来；Electron 自己是静态 CRT，不会顺带
+  装上 VC++ 运行时。删掉这段 = 包在装了 redist 的机器上测没事、在干净机器上
+  直接打不开。
 - **UI 层**：Electron 顶层脚本里不要 `const bridge = window.bridge`
   （contextBridge 属性不可配置，重复声明直接 SyntaxError）；渲染层 API 挂在
   `window.TifaLabel` 供 e2e 驱动（脚本级 const 对 executeJavaScript 不可见）。

@@ -159,6 +159,22 @@ if(TIFA_GGML_BUILD_CLI)
         dr_wav
     )
     target_compile_options(tifa_ggml_cli PRIVATE ${TIFA_GGML_WARN_FLAGS})
+
+    # Ship the MSVC runtime next to the engine.  The release bundles are copied
+    # out of build/bin verbatim, and a machine without the VC++ redistributable
+    # (a clean Windows install, a fresh VM) has no msvcp140.dll / vcruntime140.dll
+    # -- the engine would not start there at all.  Chromium links its CRT
+    # statically, so nothing else in the Electron bundle pulls the
+    # redistributable in as a side effect.
+    if(MSVC)
+        set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+        include(InstallRequiredSystemLibraries)
+        foreach(_crt IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+            add_custom_command(TARGET tifa_ggml_cli POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${_crt}" "$<TARGET_FILE_DIR:tifa_ggml_cli>")
+        endforeach()
+    endif()
 endif()
 
 # -----------------------------------------------------------------------------
