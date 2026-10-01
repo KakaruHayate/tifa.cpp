@@ -57,6 +57,13 @@ Breathe options:
   -o, --output-dir DIR        output directory (default: input directory)
       --output-formats LIST   textgrid,json           (default: textgrid)
       --backend NAME          auto | cpu | vulkan | cuda | metal
+      --merge PATH|DIR        fold the detected AP/SP into the phones tier of
+                              the first-pass alignment (<name>.TextGrid) and
+                              write the enriched TextGrid for the second pass
+                              (dataset 2PASS workflow: align -> breathe --merge
+                              -> align --textgrid)
+      --phones-tier NAME      tier to merge into       (default: phones)
+      --min-insert-ms MS      shortest AP/SP inserted (default: 50)
   -q, --quiet                 only report errors
 
 Align options:
@@ -516,8 +523,91 @@ struct BreatheOptions {
     std::string output_dir;
     std::string output_formats = "textgrid";
     std::string backend = "auto";
+    // 2PASS support: fold the detected AP/SP segments into a phones tier
+    // (an alignment produced by `align`), writing the enriched TextGrid that
+    // the second `align --textgrid` pass consumes.
+    std::string merge;              // alignment TextGrid file or directory
+    std::string phones_tier = "phones";
+    double      min_insert_ms = 50.0;
     bool        quiet = false;
 };
+
+// ---- 2PASS merge: fold AP/SP breath segments into a phones tier -----------
+
+std::string unquote_textgrid_text(std::string s) {
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = s.substr(1, s.size() - 2);
+    }
+    std::string out;
+    out.reserve(s.size());
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        if (s[i] == '"' && i + 1 < s.size() && s[i + 1] == '"') {  // "" -> "
+            out.push_back('"');
+            ++i;
+            continue;
+        }
+        if (s[i] == '\\' && i + 1 < s.size() && s[i + 1] == '"') { // \" -> "
+            out.push_back('"');
+            ++i;
+            continue;
+        }
+        out.push_back(s[i]);
+    }
+    return out;
+}
+
+// Minimal reader for the "long" ooTextFile format TIFA writes (and the Python
+// `textgrid` package round-trips).  Returns the labelled intervals of the
+// first tier called `tier_name`.
+std::vector<tifa_cli::TimedInterval> read_interval_tier(const std::string & path,
+                                              const std::string & tier_name) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw InvalidArgument("cannot open TextGrid '" + path + "'");
+
+    std::vector<tifa_cli::TimedInterval> intervals;
+    bool in_target = false;
+    std::string line;
+    while (std::getline(in, line)) {
+        const auto trim = [](const std::string & s) {
+            const std::size_t b = s.find_first_not_of(" \t\r");
+            if (b == std::string::npos) return std::string();
+            const std::size_t e = s.find_last_not_of(" \t\r");
+            return s.substr(b, e - b + 1);
+        };
+        const std::string t = trim(line);
+        if (t.rfind("item [", 0) == 0) {
+            in_target = false;                       // a new tier begins
+            continue;
+        }
+        if (t.rfind("class = ", 0) == 0 &&
+            t.find("IntervalTier") != std::string::npos) {
+            // this tier's name arrives on the next lines; mark pending
+            in_target = false;
+            continue;
+        }
+        if (t.rfind("name = ", 0) == 0) {
+            const std::string name = unquote_textgrid_text(trim(t.substr(7)));
+            in_target = name == tier_name;
+            continue;
+        }
+        if (!in_target || t.rfind("xmin = ", 0) != 0) continue;
+        tifa_cli::TimedInterval interval;
+        interval.xmin = std::strtod(t.c_str() + 7, nullptr);
+        if (!std::getline(in, line)) break;
+        interval.xmax = std::strtod(trim(line).c_str() + 7, nullptr);
+        if (!std::getline(in, line)) break;
+        const std::string tl = trim(line);
+        if (tl.rfind("text = ", 0) == 0) {
+            interval.text = unquote_textgrid_text(trim(tl.substr(7)));
+        }
+        intervals.push_back(std::move(interval));
+    }
+    if (intervals.empty()) {
+        throw InvalidArgument("TextGrid '" + path + "' has no intervals in tier '" +
+                              tier_name + "'");
+    }
+    return intervals;
+}
 
 int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
     if (opt.model.empty()) throw InvalidArgument("--model is required");
@@ -572,18 +662,54 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
             if (want_textgrid) {
                 // One interval tier with the AP/SP/V timeline; unlabelled
                 // stretches are impossible (the segments tile the file).
-                TextGridTier tier;
-                tier.name = "breath";
-                tier.intervals.reserve(segments.size());
+                TextGridTier breath_tier;
+                breath_tier.name = "breath";
+                breath_tier.intervals.reserve(segments.size());
                 for (const BreathSegment & segment : segments) {
                     TextGridInterval interval;
                     interval.xmin = segment.start;
                     interval.xmax = segment.end;
                     interval.text = segment.label;
-                    tier.intervals.push_back(std::move(interval));
+                    breath_tier.intervals.push_back(std::move(interval));
                 }
-                write_textgrid_file((out_dir / (identifier + ".breath.TextGrid")).string(),
-                                    { std::move(tier) }, seconds);
+
+                if (opt.merge.empty()) {
+                    write_textgrid_file(
+                        (out_dir / (identifier + ".breath.TextGrid")).string(),
+                        { std::move(breath_tier) }, seconds);
+                } else {
+                    // 2PASS step 2: fold the AP/SP segments into the phones
+                    // tier of the first-pass alignment and write the enriched
+                    // TextGrid the second `align --textgrid` pass consumes.
+                    fs::path alignment = opt.merge;
+                    if (fs::is_directory(alignment)) {
+                        alignment /= identifier + ".TextGrid";
+                    }
+                    const std::vector<tifa_cli::TimedInterval> phones =
+                        read_interval_tier(alignment.string(), opt.phones_tier);
+                    std::size_t inserted = 0;
+                    const std::vector<tifa_cli::TimedInterval> merged =
+                        merge_breath_into_phones(phones, segments,
+                                                 opt.min_insert_ms / 1000.0,
+                                                 &inserted);
+                    TextGridTier merged_tier;
+                    merged_tier.name = opt.phones_tier;
+                    merged_tier.intervals.reserve(merged.size());
+                    for (const tifa_cli::TimedInterval & interval : merged) {
+                        TextGridInterval out;
+                        out.xmin = interval.xmin;
+                        out.xmax = interval.xmax;
+                        out.text = interval.text;
+                        merged_tier.intervals.push_back(std::move(out));
+                    }
+                    write_textgrid_file(
+                        (out_dir / (identifier + ".TextGrid")).string(),
+                        { std::move(merged_tier), std::move(breath_tier) }, seconds);
+                    if (!opt.quiet) {
+                        std::fprintf(stderr, "breath: merged %zu AP/SP into %zu phones\n",
+                                     inserted, phones.size());
+                    }
+                }
             }
             if (want_json) {
                 namespace bren_json = tifa_ggml::internal::json;
@@ -708,6 +834,9 @@ int main(int argc, char ** argv) {
                 else if (a == "-o" || a == "--output-dir") opt.output_dir = value();
                 else if (a == "--output-formats")          opt.output_formats = value();
                 else if (a == "--backend")                 opt.backend = value();
+                else if (a == "--merge")                   opt.merge = value();
+                else if (a == "--phones-tier")             opt.phones_tier = value();
+                else if (a == "--min-insert-ms")           opt.min_insert_ms = std::strtod(value().c_str(), nullptr);
                 else if (a == "-q" || a == "--quiet")      opt.quiet = true;
                 else throw InvalidArgument("unknown option: " + a);
             }

@@ -5,6 +5,8 @@
 //   * a Praat TextGrid (the `phones` tier, or --phones-tier NAME)
 //   * a DiffSinger `transcriptions.csv` row (the ph_seq column)
 
+#include "breath/breath.h"
+
 #include <string>
 #include <vector>
 
@@ -32,5 +34,26 @@ PhoneSequence read_textgrid_tier(const std::string & path,
 // column of the row whose `name` equals `key`.  Throws when not found.
 PhoneSequence read_transcriptions_csv(const std::string & path,
                                       const std::string & key);
+
+// A phones-tier interval with its real timeline position (what the G2P
+// reader's PhoneSequence throws away and the 2PASS merge needs).
+struct TimedInterval {
+    double      xmin = 0.0;
+    double      xmax = 0.0;
+    std::string text;
+};
+
+// Fold the AP/SP segments of a breath run into the phone timeline of a
+// first-pass alignment: every segment longer than `min_insert` becomes its
+// own interval (phones overlapping it are split around it; stretches the
+// annotation already labels with the same symbol are skipped), segments in
+// the gaps (leading/trailing silence, inter-phrase pauses) are inserted as
+// they are, adjacent same-label intervals are collapsed, and unlabelled
+// stretches are dropped.  Output is sorted by time; `inserted_out` (when
+// non-null) receives how many segments were inserted.
+std::vector<TimedInterval> merge_breath_into_phones(
+        const std::vector<TimedInterval> & phones,
+        const std::vector<tifa_ggml::BreathSegment> & segments,
+        double min_insert, std::size_t * inserted_out);
 
 }  // namespace tifa_cli

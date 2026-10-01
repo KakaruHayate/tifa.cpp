@@ -92,12 +92,20 @@ PhoneSequence read_textgrid_tier(const std::string & path,
         }
         if (!in_target_tier || !have_interval) continue;
 
-        if (t.rfind("xmin =", 0) == 0) {
-            xmin = std::atof(trim(t.substr(5)).c_str());
-        } else if (t.rfind("xmax =", 0) == 0) {
-            xmax = std::atof(trim(t.substr(5)).c_str());
-        } else if (t.rfind("text =", 0) == 0) {
-            std::string v = trim(t.substr(5));
+        // `key = value` with one optional space around '=' (Praat's own
+        // writer, and ours, both emit `text = "..."` — parse by position of
+        // '=' so either spelling works)
+        const std::size_t eq = t.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = trim(t.substr(0, eq));
+        const std::string value = trim(t.substr(eq + 1));
+
+        if (key == "xmin") {
+            xmin = std::atof(value.c_str());
+        } else if (key == "xmax") {
+            xmax = std::atof(value.c_str());
+        } else if (key == "text") {
+            std::string v = value;
             if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
                 v = v.substr(1, v.size() - 2);
             }
@@ -165,6 +173,103 @@ PhoneSequence read_transcriptions_csv(const std::string & path,
         }
     }
     throw Error("identifier '" + key + "' not found in " + path);
+}
+
+}  // namespace tifa_cli
+
+namespace tifa_cli {
+
+// Fold the AP/SP segments into the phone timeline: every long-enough segment
+// becomes its own interval, phones overlapping it are split around it, and
+// segments living in the gaps (leading/trailing silence, inter-phrase pauses)
+// are inserted as they are.  Output is sorted by time and tiles the file.
+std::vector<TimedInterval> merge_breath_into_phones(
+        const std::vector<TimedInterval> & phones,
+        const std::vector<tifa_ggml::BreathSegment> & segments,
+        double min_insert, std::size_t * inserted_out) {
+    struct Insert { double xmin, xmax; const std::string * label; };
+    std::vector<Insert> inserts;
+    for (const tifa_ggml::BreathSegment & s : segments) {
+        if ((s.label == "AP" || s.label == "SP") && s.end - s.start >= min_insert) {
+            inserts.push_back({s.start, s.end, &s.label});
+        }
+    }
+
+    std::vector<TimedInterval> out;
+    std::size_t inserted = 0;
+    for (const TimedInterval & p : phones) {
+        if (p.text.empty()) continue;   // unlabelled stretches carry no phone
+        std::vector<const Insert *> inside;
+        for (const Insert & e : inserts) {
+            // the annotation may already mark this stretch (an AP the first
+            // pass placed itself, a hand-tagged SP): don't double it
+            if (p.text == *e.label) continue;
+            if (e.xmin >= p.xmin - 1e-9 && e.xmax <= p.xmax + 1e-9) {
+                inside.push_back(&e);
+            }
+        }
+        std::sort(inside.begin(), inside.end(),
+                  [](const Insert * a, const Insert * b) { return a->xmin < b->xmin; });
+        double cursor = p.xmin;
+        for (const Insert * e : inside) {
+            if (e->xmin - cursor > 1e-4) {
+                out.push_back(TimedInterval{cursor, e->xmin, p.text});
+            }
+            out.push_back(TimedInterval{e->xmin, e->xmax, *e->label});
+            ++inserted;
+            cursor = e->xmax;
+        }
+        if (p.xmax - cursor > 1e-4) {
+            out.push_back(TimedInterval{cursor, p.xmax, p.text});
+        }
+    }
+    // Segments that do not touch any labelled phone (leading/trailing
+    // silence, inter-phrase gaps) are inserted as they are.  Containment in a
+    // labelled phone is handled above; a segment straddling a phone boundary
+    // is dropped rather than forced in, so the phone timeline stays
+    // authoritative.  Unlabelled stretches never count as covered.
+    for (const Insert & e : inserts) {
+        bool overlaps = false;
+        for (const TimedInterval & p : phones) {
+            if (p.text.empty()) continue;
+            if (e.xmax > p.xmin + 1e-6 && e.xmin < p.xmax - 1e-6) {
+                overlaps = true;
+                break;
+            }
+        }
+        if (!overlaps) {
+            out.push_back(TimedInterval{e.xmin, e.xmax, *e.label});
+            ++inserted;
+        }
+    }
+    std::sort(out.begin(), out.end(),
+              [](const TimedInterval & a, const TimedInterval & b) {
+                  return a.xmin < b.xmin;
+              });
+    // Adjacent same-label intervals collapse: an insert landing next to an
+    // identical phone (any label, truly touching), or the detector's onset
+    // lagging the aligner's placement of the same breath by a few frames
+    // (breath labels only — 100 ms covers the lag, and fusing two *real*
+    // adjacent phones of any other label is not ours to decide).
+    constexpr double kBreathMergeGap = 0.1;
+    const auto is_breath_label = [](const std::string & text) {
+        return text == "AP" || text == "SP" || text == "br" || text == "sil"
+            || text == "pau";
+    };
+    std::vector<TimedInterval> deduped;
+    for (TimedInterval & interval : out) {
+        if (!deduped.empty() && deduped.back().text == interval.text) {
+            const double gap = interval.xmin - deduped.back().xmax;
+            if (gap < 1e-4 || (gap < kBreathMergeGap && is_breath_label(interval.text))) {
+                deduped.back().xmax = std::max(deduped.back().xmax, interval.xmax);
+                continue;
+            }
+        }
+        deduped.push_back(std::move(interval));
+    }
+    out = std::move(deduped);
+    if (inserted_out != nullptr) *inserted_out = inserted;
+    return out;
 }
 
 }  // namespace tifa_cli
