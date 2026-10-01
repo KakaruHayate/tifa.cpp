@@ -76,6 +76,7 @@ ui/.test-userdata/
 # Local evaluation scratch
 eval/
 golden/
+tifa_bench_scratch/
 *.gguf
 
 # G2P differential-test goldens are small JSON and load-bearing.
