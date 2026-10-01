@@ -104,6 +104,11 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
   换用自己的模型目录时，把 `dictionaries/`、`cpp_pinyin/`、`assets/` 一起放过去。
 - **PFML**：文本里可以写 `<word phonemes="zh ong">重</word>`（直接给音素，
   不经词典）或 `<scope language="ja">東京</scope>`（指定语言区间）。
+- **Linux 打不开图形界面**：Electron 依赖一批系统库，最小安装的发行版需要先装：
+  `sudo apt install libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2`
+  （其他发行版对应包名类似）。命令行包不受影响。
+- **macOS 提示「无法验证开发者」**：包未签名，右键 →「打开」即可；
+  或 `xattr -d com.apple.quarantine "TIFA Label.app"`。
 
 ---
 
@@ -216,3 +221,9 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 - **PFML**: transcripts may embed final phonemes directly
   (`<word phonemes="zh ong">重</word>`) or language scopes
   (`<scope language="ja">東京</scope>`).
+- **The GUI will not start on Linux**: Electron needs a few system libraries;
+  on a minimal install add
+  `sudo apt install libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2`
+  (similar packages elsewhere).  The CLI bundles are unaffected.
+- **macOS says the developer cannot be verified**: the build is unsigned;
+  right-click > Open, or `xattr -d com.apple.quarantine "TIFA Label.app"`.
