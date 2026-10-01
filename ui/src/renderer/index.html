@@ -1,265 +1,205 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; media-src 'self' blob:">
-  <title>TIFA Aligner Studio</title>
+  <meta charset="utf-8">
+  <title>TIFA Label — 歌声数据集标注工具</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-  <h1>TIFA Aligner Studio</h1>
-  <p class="subtitle">TIFA (Token-Imputing Forced Aligner) · on ggml</p>
-  <p class="subtitle">
-    Import audio + a phone source, run the aligner, then inspect and export
-    <code>.TextGrid</code> annotations (texts / words / phones).
-  </p>
+<header class="topbar">
+  <div class="brand">
+    <h1>TIFA Label</h1>
+    <span class="muted small">歌声数据集标注工具 · TIFA + FBL 全流程</span>
+  </div>
+  <div class="env">
+    <div class="env-row">
+      <span class="dot" id="cliDot"></span>
+      <span class="status-text" id="cli-status">检测引擎中…</span>
+      <button id="btn-cli" class="ghost small-btn">定位引擎…</button>
+      <button id="btn-inspect" class="ghost small-btn" disabled>查看模型信息</button>
+    </div>
+    <div class="env-row">
+      <span class="dot" id="modelDot"></span>
+      <span class="status-text" id="model-status">未选择对齐模型</span>
+      <button id="btn-model" class="small-btn">选择对齐模型…</button>
+    </div>
+    <div class="env-row">
+      <span class="dot" id="breathDot"></span>
+      <span class="status-text" id="breath-status">未选择呼吸模型</span>
+      <button id="btn-breath-model" class="small-btn">选择呼吸模型…</button>
+    </div>
+  </div>
+</header>
 
-  <!-- ===================== engine + model ===================== -->
-  <section class="card">
-    <h2>Model / Engine</h2>
-    <div class="grid">
-      <div class="field">
-        <label>engine</label>
-        <button id="btn-cli" class="ghost">Locate CLI…</button>
-      </div>
-      <div class="field">
-        <label>model (.gguf)</label>
-        <button id="btn-model">Choose model…</button>
-      </div>
-      <div class="field">
-        <label>inspect</label>
-        <button id="btn-inspect" class="ghost" disabled>Run inspect</button>
-      </div>
-      <div class="field" style="flex:2">
-        <label>status</label>
-        <div class="status-row">
-          <span id="cliDot" class="dot"></span><span id="cli-status" class="status-text">detecting…</span>
-        </div>
-        <div class="status-row">
-          <span id="modelDot" class="dot"></span><span id="model-status" class="status-text">no model configured</span>
-        </div>
-      </div>
-    </div>
-    <details id="inspect-box" class="inspect hidden">
-      <summary>model inspection</summary>
-      <dl id="inspect-fields"></dl>
-      <pre id="inspect-raw"></pre>
-    </details>
-  </section>
+<details id="inspect-box" class="card hidden">
+  <summary>模型信息</summary>
+  <dl id="inspect-fields"></dl>
+  <pre id="inspect-raw"></pre>
+</details>
 
-  <!-- ===================== inputs ===================== -->
-  <section class="card">
-    <h2>Inputs</h2>
-    <div id="dropZone" class="zone">
-      <div class="big">Drop audio files or a folder here — or click to choose</div>
-      <div class="muted">wav / flac / mp3 · folders are scanned recursively</div>
-    </div>
-    <input id="file-audio" type="file" accept=".wav,.flac,.mp3,audio/*" multiple style="display:none">
-    <div class="buttons" style="margin-top:0.8em">
-      <button id="btn-add-files" class="ghost">Add files…</button>
-      <button id="btn-add-folder" class="ghost">Add folder…</button>
-      <button id="btn-clear-inputs" class="ghost">Clear list</button>
-      <span class="muted" id="input-count" style="align-self:center">0 files</span>
-    </div>
-    <div class="list-wrap">
-      <table class="list" id="input-list">
-        <thead><tr><th>file</th><th>size</th><th>sidecar</th><th>status</th></tr></thead>
-        <tbody></tbody>
-      </table>
-      <div class="muted small hidden" id="input-more"></div>
-    </div>
-  </section>
+<main>
 
-  <!-- ===================== phone source ===================== -->
-  <section class="card">
-    <h2>Phones source</h2>
-    <div class="grid">
-      <div class="field">
-        <label>mode</label>
+<!-- ① 导入音频 ------------------------------------------------------------ -->
+<section class="card step">
+  <h2><span class="stepno">①</span> 导入音频</h2>
+  <div id="dropZone" class="zone">
+    <p>把音频文件或文件夹拖到这里</p>
+    <p class="muted small">支持 wav / flac / mp3 / ogg / m4a 等；将递归扫描文件夹</p>
+  </div>
+  <input id="file-audio" type="file" accept=".wav,.flac,.mp3,.ogg,.m4a,audio/*" multiple hidden>
+  <div class="row">
+    <button id="btn-add-files" class="ghost">添加文件…</button>
+    <button id="btn-add-folder" class="ghost">添加文件夹…</button>
+    <button id="btn-clear-inputs" class="ghost">清空列表</button>
+    <span class="muted" id="input-count">0 个文件</span>
+  </div>
+  <div class="table-wrap">
+    <table class="list" id="input-list">
+      <thead><tr><th>文件</th><th>时长</th><th>标注来源</th><th>状态</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="muted small hidden" id="input-more"></div>
+</section>
+
+<!-- ② 标注来源 ------------------------------------------------------------ -->
+<section class="card step">
+  <h2><span class="stepno">②</span> 标注来源</h2>
+
+  <label class="radio">
+    <input type="radio" name="src-mode" id="mode-text" value="text" checked>
+    <span><b>文本转录（自动 G2P）</b>
+      <span class="muted small">— 文本经 G2P 转成音素后对齐；支持中/英/日/粤混合与 PFML 标记</span>
+    </span>
+  </label>
+  <div class="pane" id="pane-text">
+    <p class="muted small">每首音频旁的 <code>&lt;名称&gt;.txt</code> / <code>&lt;名称&gt;.lab</code> 会自动作为文本；也可在此填统一文本：</p>
+    <input id="in-text" type="text" placeholder="（可选）统一文本；留空则逐文件查找 <名称>.txt/.lab">
+    <div class="row">
+      <label>语言 <input id="in-language" type="text" value="zh" list="langs"></label>
+      <datalist id="langs"><option value="zh"></option><option value="en"></option><option value="ja"></option><option value="yue"></option></datalist>
+      <label>OOV 处理
+        <select id="sel-oov">
+          <option value="discard">discard（丢弃生词）</option>
+          <option value="force">force（按字符强转）</option>
+          <option value="raise">raise（报错中止）</option>
+        </select>
+      </label>
+    </div>
+    <p class="muted small">PFML 示例：<code>&lt;word phonemes="zh ong"&gt;重&lt;/word&gt;</code> 直接给出音素；
+      <code>&lt;scope language="ja"&gt;東京&lt;/scope&gt;</code> 指定语言区间。</p>
+  </div>
+
+  <label class="radio">
+    <input type="radio" name="src-mode" id="mode-phones" value="phones">
+    <span><b>已有音素标注（不经过 G2P）</b>
+      <span class="muted small">— 适用于已有 .lab / transcriptions.csv / TextGrid 的旧工作流</span>
+    </span>
+  </label>
+  <div class="pane hidden" id="pane-phones">
+    <div class="row">
+      <label>来源
         <select id="sel-phones-mode">
-          <option value="auto">Auto (sidecar)</option>
-          <option value="csv">DiffSinger CSV</option>
-          <option value="textgrid-dir">TextGrid folder</option>
-          <option value="inline">Inline phones</option>
+          <option value="auto">自动查找（同级 &lt;名称&gt;.TextGrid 的 phones 层）</option>
+          <option value="csv">DiffSinger transcriptions.csv</option>
+          <option value="textgrid-dir">TextGrid 文件夹</option>
+          <option value="inline">内联音素序列</option>
         </select>
-      </div>
-      <div class="field" style="flex:2">
-        <label>&nbsp;</label>
-        <div class="status-row" id="phones-auto-row">
-          <span class="dot" id="phonesDot"></span><span id="phones-status" class="status-text">looks for &lt;name&gt;.TextGrid beside each audio file (tier “phones”)</span>
-        </div>
+      </label>
+    </div>
+
+    <div class="pane hidden" id="pane-csv">
+      <div class="row">
+        <button id="btn-pick-csv" class="ghost">选择 transcriptions.csv…</button>
+        <span class="muted small" id="csv-status">未选择</span>
       </div>
     </div>
 
-    <div id="pane-csv" class="pane hidden">
-      <div class="buttons">
-        <button id="btn-pick-csv" class="ghost">Choose transcriptions.csv…</button>
-        <span class="muted small" id="csv-status">no csv selected</span>
+    <div class="pane hidden" id="pane-textgrid-dir">
+      <div class="row">
+        <button id="btn-pick-tgdir" class="ghost">选择 TextGrid 文件夹…</button>
+        <span class="muted small" id="tgdir-status">未选择</span>
       </div>
-      <p class="muted small">
-        Rows are matched to each audio file by its file stem (the CSV <code>name</code> column).
-      </p>
-    </div>
-
-    <div id="pane-textgrid-dir" class="pane hidden">
-      <div class="buttons">
-        <button id="btn-pick-tgdir" class="ghost">Choose TextGrid folder…</button>
-        <span class="muted small" id="tgdir-status">no folder selected</span>
-      </div>
-      <div class="grid" style="margin-top:0.6em">
-        <div class="field">
-          <label>tier name</label>
-          <input id="in-phones-tier" type="text" value="phones">
-        </div>
+      <div class="row">
+        <label>层名 <input id="in-phones-tier" type="text" value="phones"></label>
       </div>
     </div>
 
-    <div id="pane-inline" class="pane hidden">
-      <div class="field">
-        <label>phones (applied to every file)</label>
-        <input id="in-inline-phones" type="text" placeholder="AP zh e n a s uan w uan m ei f an z ui w u AP SP">
-      </div>
+    <div class="pane hidden" id="pane-inline">
+      <input id="in-inline-phones" type="text" placeholder="AP zh e n a s uan w uan m ei f an AP SP">
     </div>
+  </div>
+</section>
 
-    <p class="muted small" id="textmode-note">
-      In <b>Auto</b> mode a sidecar <code>&lt;name&gt;.txt</code> / <code>.lab</code> is treated as
-      <b>text mode</b>: the CLI is called without phone flags and derives the phones itself.
-      Until that lands the CLI answers <code>no phone source</code> — its stderr is shown verbatim in the log.
-    </p>
-  </section>
+<!-- ③ 数据集流程 ---------------------------------------------------------- -->
+<section class="card step">
+  <h2><span class="stepno">③</span> 数据集流程</h2>
 
-  <!-- ===================== settings ===================== -->
-  <section class="card">
-    <h2>Settings</h2>
-    <div class="grid">
-      <div class="field">
-        <label>language (-l)</label>
-        <input id="in-language" type="text" value="zh">
-      </div>
-      <div class="field">
-        <label>skip handling</label>
-        <select id="sel-skip">
-          <option value="omit">omit (default)</option>
-          <option value="discard">discard</option>
-          <option value="preserve">preserve</option>
-        </select>
-      </div>
-      <div class="field">
-        <label>skip penalty</label>
-        <input id="in-skip-penalty" type="number" step="0.01" min="0" value="0.5">
-      </div>
-      <div class="field">
-        <label>backend</label>
+  <label class="chk"><input type="checkbox" id="chk-pass1" checked disabled>
+    第一遍对齐 <span class="muted small">（必选：TIFA 整句强制对齐）</span></label>
+
+  <label class="chk"><input type="checkbox" id="chk-breath">
+    呼吸检测 AP/SP 并合并 <span class="muted small">（FBL：检测换气，写回 phones 层）</span></label>
+  <div class="pane" id="pane-breath">
+    <div class="row">
+      <label>最短插入 <input id="in-min-insert" type="number" min="10" step="10" value="50" style="width:5em"> ms</label>
+      <span class="muted small">短于该时长的呼吸不插入（默认 50 ms）</span>
+    </div>
+  </div>
+
+  <label class="chk"><input type="checkbox" id="chk-pass2">
+    第二遍对齐（2PASS）<span class="muted small">（带呼吸标注重新对齐，得到干净句读）</span></label>
+
+  <div class="row">
+    <label>输出目录 <input id="in-outdir" type="text" placeholder="（默认：音频同级 out/）"></label>
+    <button id="btn-pick-outdir" class="ghost">…</button>
+  </div>
+
+  <details class="advanced">
+    <summary>高级选项</summary>
+    <div class="row">
+      <label class="chk"><input type="checkbox" id="in-export-json"> 同时导出诊断 JSON</label>
+      <label>计算后端
         <select id="sel-backend">
-          <option value="auto">auto</option>
-          <option value="cpu">cpu</option>
-          <option value="vulkan">vulkan</option>
+          <option value="auto">auto</option><option value="cpu">cpu</option>
+          <option value="vulkan">vulkan</option><option value="cuda">cuda</option>
+          <option value="metal">metal</option>
         </select>
-      </div>
-      <div class="field" style="grid-column: span 2">
-        <label>output directory</label>
-        <div class="row">
-          <input id="in-outdir" type="text" placeholder="(default: &lt;input dir&gt;/out)">
-          <button id="btn-pick-outdir" class="ghost">…</button>
-        </div>
-      </div>
-      <div class="field">
-        <label>diagnosis JSON</label>
-        <label class="chk"><input id="in-export-json" type="checkbox" checked> --output-formats textgrid,json</label>
-      </div>
-      <div class="field">
-        <label>textgrid tier</label>
-        <input id="in-phones-tier-2" type="text" value="phones">
-      </div>
+      </label>
     </div>
-  </section>
-
-  <!-- ===================== run ===================== -->
-  <section class="card">
-    <h2>Run</h2>
-    <div class="buttons">
-      <button id="btn-run" disabled>Align</button>
-      <button id="btn-cancel" class="ghost" disabled>Cancel</button>
-      <button id="btn-open-out" class="ghost" disabled>Open output folder</button>
-    </div>
-    <div class="progress"><i id="progress-bar" style="width:0%"></i></div>
-    <div class="status-row">
-      <span id="runDot" class="dot"></span>
-      <span id="run-status" class="status-text">idle</span>
-    </div>
-    <pre id="log">[ready]</pre>
-  </section>
-
-  <!-- ===================== results ===================== -->
-  <section class="card">
-    <h2>Results</h2>
-    <div class="grid">
-      <div class="field">
-        <label>sort by</label>
-        <select id="sel-sort">
-          <option value="agreement" selected>agreement</option>
-          <option value="confidence">confidence</option>
-          <option value="determinacy">determinacy</option>
-          <option value="monotonicity">monotonicity</option>
-          <option value="name">file name</option>
+    <div class="row">
+      <label>零宽音素处理
+        <select id="sel-skip">
+          <option value="omit">omit（省略）</option>
+          <option value="discard">discard（整句丢弃）</option>
+          <option value="preserve">preserve（保留为极短）</option>
         </select>
-      </div>
-      <div class="field">
-        <label>order</label>
-        <select id="sel-sort-dir">
-          <option value="asc" selected>worst first</option>
-          <option value="desc">best first</option>
-        </select>
-      </div>
-      <div class="field" style="flex:2">
-        <label>&nbsp;</label>
-        <div class="buttons">
-          <button id="btn-save-csv" class="ghost" disabled>Save table as CSV</button>
-        </div>
-      </div>
+      </label>
+      <label>跳音素代价 <input id="in-skip-penalty" type="number" step="0.01" min="0" value="0.5" style="width:5em"></label>
+      <label class="chk"><input type="checkbox" id="in-quiet"> 安静模式（仅报错）</label>
     </div>
-    <div class="list-wrap tall">
-      <table class="list" id="result-table">
-        <thead><tr>
-          <th>file</th><th class="num">frames</th><th class="num">phones</th>
-          <th class="num">agreement</th><th class="num">confidence</th>
-          <th class="num">determinacy</th><th class="num">monotonicity</th><th>status</th>
-        </tr></thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
+  </details>
+</section>
 
-  <!-- ===================== preview ===================== -->
-  <section class="card">
-    <h2>Preview</h2>
-    <div class="buttons">
-      <button id="btn-play" disabled>Play</button>
-      <span class="muted small" id="preview-status">select a result row</span>
-    </div>
-    <div class="canvas-wrap">
-      <canvas id="waveform" width="900" height="110"></canvas>
-      <div id="strip-wrap" class="canvas-wrap">
-        <canvas id="strip" width="900" height="132"></canvas>
-        <div id="tooltip" class="tooltip hidden"></div>
-      </div>
-    </div>
-    <div class="legend">
-      <span class="sw texts"></span><span class="muted small">texts</span>
-      <span class="sw words"></span><span class="muted small">words</span>
-      <span class="sw phones"></span><span class="muted small">phones</span>
-      <span class="muted small">· click a canvas to seek · hover a phone for label + times</span>
-    </div>
-  </section>
+<!-- 运行 ------------------------------------------------------------------ -->
+<section class="card runbar">
+  <div class="row">
+    <button id="btn-run" disabled>开始标注</button>
+    <button id="btn-cancel" class="ghost" disabled>取消</button>
+    <button id="btn-open-out" class="ghost" disabled>打开输出目录</button>
+    <span class="muted" id="run-status"></span>
+  </div>
+  <div class="progress"><div class="progress-fill" id="progress-fill"></div></div>
+  <details id="log-box">
+    <summary>运行日志</summary>
+    <pre id="log"></pre>
+  </details>
+</section>
 
-  <footer>
-    <a href="https://github.com/openvpi/TIFA" target="_blank" rel="noopener">openvpi/TIFA</a>
-    <span class="sep">·</span>
-    <span class="muted">port on ggml · MIT</span>
-  </footer>
+</main>
 
-  <script src="../lib/parse.js"></script>
-  <script src="app.js"></script>
+<script src="../lib/parse.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

@@ -188,3 +188,45 @@ footer {
 footer a { color: var(--fg); text-decoration: none; border-bottom: 1px dotted var(--muted); padding-bottom: 1px; }
 footer a:hover { border-bottom-color: var(--fg); }
 footer .sep { margin: 0 0.5em; opacity: 0.4; }
+
+/* ---- TIFA Label 布局（数据集工具） --------------------------------------- */
+
+.topbar {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  gap: 1.5em; flex-wrap: wrap; margin-bottom: 1.2em;
+}
+.topbar .brand h1 { margin: 0 0 0.1em; font-size: 1.45em; }
+.env { display: flex; flex-direction: column; gap: 0.3em; font-size: 0.88em; }
+.env-row { display: flex; align-items: center; gap: 0.55em; }
+.env-row .status-text { color: var(--muted); max-width: 46ch; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.small-btn { font-size: 0.85em; padding: 0.3em 0.7em; }
+
+.step h2 { display: flex; align-items: center; gap: 0.5em; font-size: 1em;
+  text-transform: none; letter-spacing: 0; color: var(--fg); font-weight: 600; }
+.stepno { display: inline-flex; align-items: center; justify-content: center;
+  width: 1.6em; height: 1.6em; border-radius: 50%; background: #111; color: #fff;
+  font-size: 0.9em; flex-shrink: 0; }
+
+label.radio { display: flex; align-items: flex-start; gap: 0.6em; padding: 0.55em 0;
+  cursor: pointer; }
+label.radio input { margin-top: 0.25em; }
+label.radio b { font-weight: 600; }
+
+.table-wrap { margin-top: 0.7em; max-height: 240px; overflow: auto;
+  border: 1px solid var(--border); border-radius: 8px; }
+.zone.over { border-color: var(--accent); color: var(--fg); background: #f6f6f6; }
+
+.progress-fill { height: 100%; width: 0; background: var(--accent);
+  border-radius: 999px; transition: width 0.2s ease; }
+.ok-text { color: var(--ok); }
+.bad-text { color: var(--bad); }
+
+.advanced { margin-top: 0.8em; }
+.advanced summary { cursor: pointer; color: var(--muted); font-size: 0.9em; }
+.advanced .row { margin-top: 0.6em; flex-wrap: wrap; }
+
+.runbar { position: sticky; bottom: 0; box-shadow: 0 -6px 18px rgba(0,0,0,0.05); }
+#log-box { margin-top: 0.6em; }
+#log-box summary { cursor: pointer; color: var(--muted); font-size: 0.9em; }
+#log { max-height: 240px; margin-top: 0.5em; }

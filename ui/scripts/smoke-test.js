@@ -131,6 +131,14 @@ eq('agreement', diag.agreement, 0.999);
 eq('fields', [diag.confidence, diag.determinacy, diag.monotonicity].map(v => v != null), [true, true, true]);
 eq('bad json -> null', P.parseDiagnosis('{nope'), null);
 
+// --- 4b. align summary line -------------------------------------------------
+console.log('[4b] parseAlignSummary');
+const SUM = 'hanser_0_0                                 870 frames    48 phones    211.0 ms  agreement 1.000' + String.fromCharCode(10);
+const sum = P.parseAlignSummary(SUM);
+check('parses', !!sum, sum);
+eq('fields', [sum.frames, sum.phones, sum.ms, sum.agreement], [870, 48, 211.0, 1.0]);
+eq('garbage -> null', P.parseAlignSummary('no summary here'), null);
+
 // --- 5. inspect output ------------------------------------------------------
 console.log('[5] parseInspect');
 const ins = P.parseInspect(INSPECT);

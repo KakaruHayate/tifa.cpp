@@ -1,7 +1,7 @@
 {
-  "name": "tifa-aligner-studio",
+  "name": "tifa-label",
   "version": "0.1.0",
-  "description": "TIFA (Token-Imputing Forced Aligner) desktop UI on ggml — import audio + phones, align, inspect and export TextGrid annotations",
+  "description": "TIFA Label — singing-dataset annotation studio on ggml: TIFA forced alignment + FBL breath AP/SP + 2PASS, batch oriented",
   "main": "src/main.js",
   "scripts": {
     "start": "electron .",
@@ -14,7 +14,7 @@
   },
   "author": {
     "name": "KakaruHayate",
-    "email": "kakaru@tifa-aligner-studio.invalid"
+    "email": "kakaru@tifa-label.invalid"
   },
   "license": "MIT",
   "repository": {
@@ -29,8 +29,8 @@
     "electron-builder": "^24.13.3"
   },
   "build": {
-    "appId": "com.kakaru.tifa-aligner",
-    "productName": "TIFA Aligner Studio",
+    "appId": "com.kakaru.tifa-label",
+    "productName": "TIFA Label",
     "files": [
       "src/**/*"
     ],
@@ -49,7 +49,7 @@
       "category": "public.app-category.music"
     },
     "linux": {
-      "maintainer": "KakaruHayate <kakaru@tifa-aligner-studio.invalid>",
+      "maintainer": "KakaruHayate <kakaru@tifa-label.invalid>",
       "target": [
         "AppImage",
         "deb"

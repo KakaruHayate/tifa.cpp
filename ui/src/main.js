@@ -1,6 +1,6 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// TIFA Aligner Studio — Electron main process.
+// TIFA Label — Electron main process (dataset annotation tool).
 //
 // The renderer owns no Node APIs: everything (dialogs, fs, spawning the ggml
 // CLI) goes through the IPC surface registered below and exposed by
@@ -276,6 +276,26 @@ function registerIpc() {
     writeConfig({ modelPath });
     return { ok: true, modelPath };
   });
+
+  // --- breath (FBL) model -------------------------------------------------
+  handle('breath:pick', async () => {
+    const r = await dialog.showOpenDialog({
+      title: 'Select breath/AP detector .gguf (FBL)',
+      properties: ['openFile'],
+      filters: [{ name: 'GGUF model', extensions: ['gguf'] }, { name: 'All files', extensions: ['*'] }],
+      defaultPath: readConfig().breathModel ? path.dirname(readConfig().breathModel) : undefined,
+    });
+    if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
+    const breathModel = r.filePaths[0];
+    writeConfig({ breathModel });
+    return { ok: true, breathModel };
+  });
+  handle('breath:set', (e, breathModel) => {
+    if (!breathModel) return { ok: false, error: 'no path' };
+    if (!fs.existsSync(breathModel)) return { ok: false, error: 'file not found: ' + breathModel };
+    writeConfig({ breathModel });
+    return { ok: true, breathModel };
+  });
   handle('model:info', (e, modelPath) => {
     if (!modelPath) return { ok: false, error: 'no model selected' };
     let size = null;
@@ -478,7 +498,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 620,
     backgroundColor: '#fdfdfd',
-    title: 'TIFA Aligner Studio',
+    title: 'TIFA Label',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

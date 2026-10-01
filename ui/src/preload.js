@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('bridge', {
   // model
   pickModel: () => ipcRenderer.invoke('model:pick'),
   setModel: (p) => ipcRenderer.invoke('model:set', p),
+  pickBreathModel: () => ipcRenderer.invoke('breath:pick'),
+  setBreathModel: (p) => ipcRenderer.invoke('breath:set', p),
   modelInfo: (p) => ipcRenderer.invoke('model:info', p),
   inspectModel: (p) => ipcRenderer.invoke('model:inspect', p),
 

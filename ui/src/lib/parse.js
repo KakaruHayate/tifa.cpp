@@ -288,6 +288,7 @@
     const outDir = item.outDir || s.outDir;
     if (outDir) a.push('-o', outDir);
     if (s.language) a.push('-l', s.language);
+    if (s.oovHandling && s.oovHandling !== 'discard') a.push('--oov-handling', s.oovHandling);
 
     switch (item.kind) {
       case 'textgrid':
@@ -306,9 +307,10 @@
         a.push('--phones', s.inlinePhones);
         break;
       case 'text':
-        // Text mode: the CLI derives the phones itself (there are no phone
-        // flags to pass).  Until that lands the CLI errors out and we surface
-        // its stderr verbatim.
+        // Text mode: the CLI derives the phones itself.  A uniform transcript
+        // applies to every file; otherwise it looks for <name>.txt/.lab
+        // beside the audio.  PFML fragments are accepted verbatim.
+        if (s.uniformText) a.push('--text', s.uniformText);
         break;
       default:
         break;
@@ -322,6 +324,23 @@
     if (s.backend && s.backend !== 'auto') a.push('--backend', s.backend);
     if (s.maxFrames) a.push('--max-frames', String(s.maxFrames));
     return a;
+  }
+
+  // -------------------------------------------------------------------------
+  // CLI stdout summary line
+  // -------------------------------------------------------------------------
+  // "name   870 frames   48 phones   211.0 ms   agreement 1.000"
+  // (the breathe command prints its own shape; unmatched text -> null)
+  function parseAlignSummary(text) {
+    const m = String(text == null ? '' : text).match(
+      /(\d+)\s+frames\s+(\d+)\s+phones\s+([\d.]+)\s*ms\s+agreement\s+([\d.]+)/);
+    if (!m) return null;
+    return {
+      frames: Number(m[1]),
+      phones: Number(m[2]),
+      ms: Number(m[3]),
+      agreement: Number(m[4]),
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -421,7 +440,7 @@
     baseName, dirName, stemOf, extOf, joinPath, isAudio,
     parseCsv, csvIndex, splitCsvRows,
     parseTextGrid, parseIntervalBody, tierByName, unquote,
-    parseDiagnosis, parseInspect, resolveSidecar, buildAlignArgs,
+    parseDiagnosis, parseInspect, parseAlignSummary, resolveSidecar, buildAlignArgs,
     sortRows, toCsv, fmtMetric, fmtInt, fmtSeconds, fmtTime,
   };
 });

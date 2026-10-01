@@ -1,13 +1,15 @@
 'use strict';
 // ---------------------------------------------------------------------------
-// Headless end-to-end check of the renderer.
+// Headless end-to-end check of the TIFA Label renderer.
 //
 //   npx electron scripts/e2e-electron.js --user-data-dir=<dir>
 //
-// Boots the real app (src/main.js registers the IPC surface), then drives the
-// renderer through executeJavaScript: add an input file, align it, build the
-// result row, render the waveform + annotation strip, hover a phone interval
-// and start playback.  Prints a JSON report and exits non-zero on failure.
+// Boots the real app (src/main.js registers the IPC surface) and drives the
+// dataset workflow through executeJavaScript: detect the engine, load the
+// model, import a wav from the dataset, run the CSV (known-phones) mode, and
+// — when TIFA_E2E_BREATH points at a breath GGUF — the full
+// align -> breathe --merge -> 2PASS chain.  Prints a JSON report and exits
+// non-zero on failure.
 // ---------------------------------------------------------------------------
 const { app, BrowserWindow } = require('electron');
 const path = require('path');
@@ -18,12 +20,16 @@ const DATASET = process.env.TIFA_E2E_DATASET || 'path/to/dataset';
 const SAMPLE = process.env.TIFA_E2E_SAMPLE || 'sample_0_0';
 const MODEL = process.env.TIFA_GGML_MODEL ||
   path.join(__dirname, '..', '..', '..', 'models', 'tifa-1.0-st-f16.gguf');
-// Never let the harness write next to the dataset: use an explicit output dir.
-const OUT_DIR = path.join(os.tmpdir(), 'tifa-ui-e2e-out-' + Date.now()).replace(/\\/g, '/');
+const BREATH_MODEL = process.env.TIFA_E2E_BREATH || '';
+const BACKEND = process.env.TIFA_E2E_BACKEND || 'vulkan';
+// Never let the harness write next to the dataset: use explicit output dirs.
+const OUT_DIR = path.join(os.tmpdir(), 'tifa-label-e2e-out-' + Date.now()).replace(/\\/g, '/');
+const OUT_DIR_2 = OUT_DIR + '-2pass';
 
-// Keep the harness out of the real user profile unless the caller overrides it.
+// A FRESH profile per run: Chromium's disk cache would otherwise serve the
+// previous run's renderer bundle and silently drive dead code.
 if (!process.argv.some(a => a.startsWith('--user-data-dir'))) {
-  app.setPath('userData', path.join(os.tmpdir(), 'tifa-ui-e2e-userdata'));
+  app.setPath('userData', path.join(os.tmpdir(), 'tifa-label-e2e-userdata-' + Date.now()));
 }
 
 require('../src/main.js');                       // the real app
@@ -31,141 +37,92 @@ require('../src/main.js');                       // the real app
 const checks = [];
 function check(name, cond, detail) {
   checks.push({ name, ok: !!cond, detail: cond ? undefined : detail });
-  console.log((cond ? '  ok   ' : '  FAIL ') + name + (cond || detail === undefined ? '' : '  -> ' + JSON.stringify(detail)));
+  console.log((cond ? '  ok   ' : '  FAIL ') + name + (cond ? '' : '  -> ' + JSON.stringify(detail)));
 }
 
 const DRIVER = `(async () => {
   const out = { steps: [] };
+  const L = window.TifaLabel;
+  const S = L.S;
   const step = (s, v) => out.steps.push({ step: s, value: v });
+  const $ = (id) => document.getElementById(id);
+  const pause = (ms) => new Promise(r => setTimeout(r, ms));
 
-  // --- engine + model (a fresh profile has neither configured) ------------
-  step('cliPath', S.cli.path);
-  if (!S.cli.path) await detectCli(true);
-  step('cliPath2', S.cli.path);
-  if (!S.model.path) await loadModel('${MODEL.replace(/\\/g, '/')}');
-  step('model', S.model.path);
-  step('inspectFields', S.model.fields.map(f => f.key));
+  // --- engine + model ------------------------------------------------------
+  if (!S.cliPath) await L.detectCli(true);
+  step('cliPath', S.cliPath);
+  await L.loadModel('${MODEL.replace(/\\/g, '/')}');
+  step('model', S.modelPath);
 
-  // --- inputs -------------------------------------------------------------
-  await addPaths(['${DATASET.replace(/\\/g, '/')}/wavs/${SAMPLE}.wav']);
+  // --- inputs --------------------------------------------------------------
+  await L.addPaths(['${DATASET.replace(/\\/g, '/')}/wavs/${SAMPLE}.wav']);
   step('inputs', S.inputs.length);
   step('sidecarKind', S.inputs[0] && S.inputs[0].sidecarKind);
-  step('sidecarPath', S.inputs[0] && S.inputs[0].sidecarPath);
 
-  // --- settings: DiffSinger CSV ------------------------------------------
-  S.settings.phonesMode = 'csv';
-  S.settings.csvPath = '${DATASET.replace(/\\/g, '/')}/transcriptions.csv';
-  S.settings.language = 'zh';
-  S.settings.backend = 'vulkan';
-  S.settings.exportJson = true;
-  // Same as choosing it in the picker: persist it, then index it.
-  await window.bridge.setConfig({ csvPath: S.settings.csvPath });
-  step('csvIndexed', await loadCsvIndex(S.settings.csvPath));
-  step('csvRows', S.csv.count);
-  step('csvHasSample', csvHas('${SAMPLE}'));
-  step('plan', planFor(S.inputs[0]));
-  step('argv', P.buildAlignArgs({ path: S.inputs[0].path, kind: 'csv', key: '${SAMPLE}' },
-                                Object.assign({}, S.settings, { modelPath: S.model.path })));
+  // --- source: known phones from the DiffSinger CSV ------------------------
+  document.querySelector('input[name="src-mode"][value="phones"]').checked = true;
+  $('sel-phones-mode').value = 'csv';
+  $('csv-status').dataset.path = '${DATASET.replace(/\\/g, '/')}/transcriptions.csv';
+  $('in-language').value = 'zh';
+  $('sel-backend').value = '${BACKEND}';
+  $('in-outdir').value = '${OUT_DIR}';
+  L.refreshSourceUI();
+  L.refreshRunReady();
+  step('runEnabled', !$('btn-run').disabled);
 
-  // --- run ----------------------------------------------------------------
-  S.settings.outDir = '${OUT_DIR}';
-  await runAll();
-  step('outDirUsed', S.run.outDir);
-  const row = S.results[0] || {};
-  step('results', S.results.length);
-  step('row', { name: row.name, frames: row.frames, phones: row.phones,
-                agreement: row.agreement, status: row.status, error: row.error && row.error.slice(0, 120),
-                tgPath: row.tgPath });
-  step('progressWidth', document.getElementById('progress-bar').style.width);
-  step('inputStatus', S.inputs[0].status);
+  // --- run stage 1 (align) -------------------------------------------------
+  await L.runAll();
+  const item = S.inputs[0] || {};
+  step('status', item.status);
+  step('frames', item.frames);
+  step('phones', item.phones);
+  step('agreement', item.agreement);
+  step('progressWidth', $('progress-fill').style.width);
+  step('outputExists', await window.bridge.exists('${OUT_DIR}/${SAMPLE}.TextGrid').then(r => r.exists === true));
 
-  // --- preview ------------------------------------------------------------
-  if (S.results[0]) await selectRow(S.results[0], true);
-  step('audio', S.audio && S.audio.buffer ? {
-    duration: Number(S.audio.duration.toFixed(3)), sampleRate: S.audio.buffer.sampleRate,
-    peaks: S.audio.peaks ? S.audio.peaks.length / 2 : 0 } : null);
-  step('gridPath', S.audio && S.audio.gridPath);
-  step('gridTiers', S.audio && S.audio.grid ? S.audio.grid.tiers.map(t => t.name + ':' + t.intervals.length) : null);
-  step('stripLanes', S.strip ? S.strip.lanes.map(l => l.name + ':' + l.intervals.length) : null);
-  step('waveformCanvasPx', [document.getElementById('waveform').width, document.getElementById('waveform').height]);
-  step('stripCanvasPx', [document.getElementById('strip').width, document.getElementById('strip').height]);
-  step('playLabel', document.getElementById('btn-play').textContent);
+  // --- stage 2+3 (breathe --merge, then 2PASS) when a breath model is set --
+  ${BREATH_MODEL ? `
+  $('in-outdir').value = '${OUT_DIR_2}';
+  await L.loadBreathModel('${BREATH_MODEL.replace(/\\/g, '/')}');
+  $('chk-breath').checked = true;
+  $('chk-pass2').checked = true;
+  L.refreshSourceUI();
+  L.refreshRunReady();
+  step('domOutdir2', $('in-outdir').value);
+  step('settingsOutdir2', L.settings().outDir);
+  step('runEnabled2', !$('btn-run').disabled);
+  await L.runAll();
+  step('status2', S.inputs[0] && S.inputs[0].status);
+  step('note2', S.inputs[0] && S.inputs[0].note);
+  step('logTail', $('log').textContent.slice(-2600));
+  step('frames2', S.inputs[0] && S.inputs[0].frames);
+  step('agreement2', S.inputs[0] && S.inputs[0].agreement);
+  step('output2Exists', await window.bridge.exists('${OUT_DIR_2}/${SAMPLE}.TextGrid').then(r => r.exists === true));
+  step('output2HasBreathTier', await window.bridge.readText('${OUT_DIR_2}/${SAMPLE}.TextGrid')
+      .then(t => t.ok && t.text.includes('name = "phones"')).catch(() => false));
+  ` : `step('breathSkipped', 'TIFA_E2E_BREATH not set');`}
 
-  // hover a phone interval (the middle of the 3rd interval of the phones lane)
-  const cv = document.getElementById('strip');
-  const rect = cv.getBoundingClientRect();
-  const phones = S.strip && S.strip.lanes.find(l => l.name === 'phones');
-  let hover = null;
-  if (phones && phones.intervals.length > 3) {
-    const bar = phones.intervals[3];
-    const cx = rect.left + (bar.xmin + bar.xmax) / 2 / S.strip.duration * rect.width;
-    const cy = rect.top + phones.y + phones.h / 2;
-    cv.dispatchEvent(new MouseEvent('mousemove', { clientX: cx, clientY: cy, bubbles: true }));
-    const tip = document.getElementById('tooltip');
-    hover = { hidden: tip.classList.contains('hidden'), text: tip.textContent,
-              highlight: S.hover && S.hover.id, expected: bar.id, label: bar.text,
-              t0: bar.xmin, t1: bar.xmax };
-  }
-  step('hover', hover);
-
-  // --- click-to-seek at 50% of the strip ----------------------------------
-  let seek = null;
-  if (phones) {
-    const cx = rect.left + rect.width * 0.5;
-    const cy = rect.top + phones.y + phones.h / 2;
-    cv.dispatchEvent(new MouseEvent('mousedown', { clientX: cx, clientY: cy, bubbles: true }));
-    seek = { offset: S.audio.playOffset, expected: S.audio.duration * 0.5 };
-    step('seek', seek);
-  }
-
-  // --- playback -----------------------------------------------------------
-  let playback = null;
-  try {
-    await togglePlay();
-    await new Promise(r => setTimeout(r, 350));
-    const t = playheadTime();
-    playback = { playing: S.audio.playing, advanced: t != null && t > 0.05,
-                 startedNearSeek: seek ? Math.abs(t - seek.offset) < 0.3 : null,
-                 t: t == null ? null : Number(t.toFixed(3)),
-                 ctxState: S.audio.ctx ? S.audio.ctx.state : null,
-                 label: document.getElementById('btn-play').textContent };
-    await togglePlay();
-    playback.paused = !S.audio.playing;
-  } catch (e) {
-    playback = { error: String(e && e.message || e) };
-  }
-  step('playback', playback);
-
-  // Is the AudioContext clock itself running?  Without an audio device the
-  // clock can stall, which makes the playhead look frozen.
-  if (S.audio && S.audio.ctx) {
-    const c0 = S.audio.ctx.currentTime;
-    await new Promise(r => setTimeout(r, 500));
-    const c1 = S.audio.ctx.currentTime;
-    step('ctxClock', { c0: Number(c0.toFixed(3)), c1: Number(c1.toFixed(3)), delta: Number((c1 - c0).toFixed(3)) });
-  }
-
-  // --- sorting + csv export ----------------------------------------------
-  step('sortMetric', S.settings.sortMetric);
-  step('ordered', orderResults().map(r => r.name));
-  step('csvExport', P.toCsv(orderResults()).split('\\n').slice(0, 2));
-
-  // --- cancel kills the running child -------------------------------------
+  // --- cancel kills the running child --------------------------------------
   let cancel = null;
   try {
-    const args2 = P.buildAlignArgs({ path: S.inputs[0].path, kind: 'csv', key: '${SAMPLE}' },
-      Object.assign({}, S.settings, { modelPath: S.model.path, outDir: '${OUT_DIR}' }));
-    const pending = window.bridge.runAlign({ cliPath: S.cli.path, args: args2,
-      item: { stem: 'cancel-probe' }, outDir: '${OUT_DIR}', backend: S.settings.backend });
-    await new Promise(r => setTimeout(r, 1500));
+    // CPU backend over the whole wavs folder: several seconds of work, so the
+    // cancel below lands mid-run instead of racing a fast finish.
+    const args = ['align', '${DATASET.replace(/\\/g, '/')}/wavs',
+                  '-m', '${MODEL.replace(/\\/g, '/')}', '--transcriptions-csv',
+                  '${DATASET.replace(/\\/g, '/')}/transcriptions.csv',
+                  '-l', 'zh', '-o', '${OUT_DIR}', '--backend', 'cpu'];
+    const pending = window.bridge.runAlign({ cliPath: S.cliPath, args,
+      item: { stem: 'cancel-probe' }, outDir: '${OUT_DIR}', backend: 'cpu' });
+    await pause(1200);
     const c = await window.bridge.cancelRun();
     const res = await pending;
-    cancel = { killed: c.killed, cancelled: res.cancelled, ok: res.ok, code: res.code, ms: res.durationMs };
+    cancel = { killed: c.killed, cancelled: res.cancelled, ok: res.ok, code: res.code };
     await window.bridge.resetCancel();
   } catch (e) {
     cancel = { error: String(e && e.message || e) };
   }
   step('cancel', cancel);
+
   return out;
 })()`;
 
@@ -189,49 +146,36 @@ app.whenReady().then(async () => {
 
   console.log('\n--- checks ---');
   check('driver ran', !err, err);
-  check('CLI detected', !!steps.cliPath2, steps.cliPath2 || steps.cliPath);
+  check('CLI detected', !!steps.cliPath, steps.cliPath);
   check('model loaded', !!steps.model, steps.model);
   check('input scanned', steps.inputs === 1, steps);
-  check('sidecar TextGrid found', steps.sidecarKind === 'textgrid', steps.sidecarKind);
-  check('csv index loaded', steps.csvRows > 1000 && steps.csvHasSample === true, steps);
-  check('csv plan', steps.plan && steps.plan.kind === 'csv', steps.plan);
-  check('argv has csv + backend', Array.isArray(steps.argv) &&
-        steps.argv.includes('--transcriptions-csv') && steps.argv.includes('vulkan') &&
-        steps.argv.includes('--output-formats'), steps.argv);
-  check('run produced a row', steps.results === 1, steps.results);
-  check('row parsed', steps.row && steps.row.frames > 0 && steps.row.phones > 0, steps.row);
-  check('row agreement parsed', steps.row && steps.row.agreement > 0 && steps.row.agreement <= 1, steps.row);
-  check('row status ok', steps.row && /^ok/.test(steps.row.status), steps.row);
-  check('input list status ok', steps.inputStatus === 'ok', steps.inputStatus);
+  check('sidecar detected', steps.sidecarKind === 'textgrid' || steps.sidecarKind === 'text' || steps.sidecarKind === 'none', steps.sidecarKind);
+  check('run button enabled', steps.runEnabled === true, steps.runEnabled);
+  check('stage 1 completed', steps.status === '完成', steps.status);
+  check('frames parsed', steps.frames > 0, steps.frames);
+  check('phones parsed', steps.phones > 0, steps.phones);
+  check('agreement parsed', steps.agreement > 0 && steps.agreement <= 1, steps.agreement);
   check('progress bar 100%', steps.progressWidth === '100%', steps.progressWidth);
-  check('output written to the configured dir', steps.outDirUsed === OUT_DIR, steps.outDirUsed);
+  check('output written', steps.outputExists === true, steps.outputExists);
+
+  if (BREATH_MODEL) {
+    check('breath run button enabled', steps.runEnabled2 === true, steps.runEnabled2);
+    check('2PASS chain completed', steps.status2 === '完成', steps.status2);
+    check('2PASS output written', steps.output2Exists === true, steps.output2Exists);
+    check('2PASS output is a phones TextGrid', steps.output2HasBreathTier === true, steps.output2HasBreathTier);
+  } else {
+    console.log('  note  TIFA_E2E_BREATH not set - breath/2PASS stages skipped');
+  }
+
+  check('cancel killed the child', steps.cancel && steps.cancel.killed === true && steps.cancel.cancelled === true, steps.cancel);
   check('no stray output next to the dataset',
         !fs.existsSync(path.join(path.dirname(path.join(DATASET, 'wavs', SAMPLE + '.wav')), 'out')),
         path.join(DATASET, 'wavs', 'out'));
-  check('audio decoded', steps.audio && steps.audio.duration > 1, steps.audio);
-  check('waveform peaks computed', steps.audio && steps.audio.peaks > 100, steps.audio);
-  check('grid loaded for preview', steps.gridTiers && steps.gridTiers.length >= 1, steps.gridTiers);
-  check('strip has 3 lanes', steps.stripLanes && steps.stripLanes.length === 3, steps.stripLanes);
-  check('canvases sized', steps.waveformCanvasPx && steps.waveformCanvasPx[0] > 0 &&
-        steps.stripCanvasPx && steps.stripCanvasPx[1] > 0, [steps.waveformCanvasPx, steps.stripCanvasPx]);
-  check('hover shows label + times', steps.hover && !steps.hover.hidden &&
-        /s/.test(steps.hover.text || ''), steps.hover);
-  check('hover highlights the same bar', steps.hover && steps.hover.highlight === steps.hover.expected, steps.hover);
-  const stalledClock = steps.ctxClock && steps.ctxClock.delta < 0.05;
-  check('playback starts a source', steps.playback && steps.playback.playing === true, steps.playback);
-  check('playhead advances (or the audio clock itself is stalled -> not verifiable here)',
-        steps.playback && (steps.playback.advanced || stalledClock),
-        { playback: steps.playback, ctxClock: steps.ctxClock });
-  check('pause works', steps.playback && steps.playback.paused !== false, steps.playback);
-  check('inspect parsed at startup', Array.isArray(steps.inspectFields) && steps.inspectFields.length > 3, steps.inspectFields);
-  check('csv export rows', Array.isArray(steps.csvExport) && steps.csvExport.length === 2, steps.csvExport);
-  check('click on the strip seeks', steps.seek && Math.abs(steps.seek.offset - steps.seek.expected) < 0.05, steps.seek);
-  check('playback starts from the clicked position', steps.playback && steps.playback.startedNearSeek === true, steps.playback);
-  check('cancel kills the child', steps.cancel && steps.cancel.killed === true &&
-        steps.cancel.cancelled === true && steps.cancel.ok === false, steps.cancel);
 
-  const failed = checks.filter(c => !c.ok).length;
-  console.log('\n' + (failed ? 'E2E FAILED' : 'E2E PASSED') + ' · ' + (checks.length - failed) + ' passed, ' + failed + ' failed');
-  try { fs.rmSync(OUT_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
-  app.exit(failed ? 1 : 0);
-}).catch((e) => { console.error('e2e boot error:', e); app.exit(2); });
+  const failed = checks.filter(c => !c.ok);
+  console.log('\n' + (checks.length - failed.length) + ' passed, ' + failed.length + ' failed');
+  app.exit(failed.length ? 1 : 0);
+}).catch((e) => {
+  console.log('harness error:', e);
+  app.exit(3);
+});

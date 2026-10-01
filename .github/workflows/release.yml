@@ -96,7 +96,7 @@ jobs:
       - name: Assemble the bundle
         shell: pwsh
         run: |
-          $root = "bundle/tifa-aligner-studio"
+          $root = "bundle/tifa-label"
           New-Item -ItemType Directory -Force -Path $root | Out-Null
 
           # Electron app (unpacked) at the top level ...
@@ -113,25 +113,28 @@ jobs:
 
           Copy-Item -Force README.md "$root/README.md"
           @"
-          TIFA Aligner Studio - quick start
-          =================================
-          1. Run "TIFA Aligner Studio.exe".
-          2. Pick the model:  models/tifa-1.0-st-q4_0.gguf
+          TIFA Label - quick start (dataset annotation)
+          =============================================
+          1. Run "TIFA Label.exe".
+          2. Pick the aligner model:  models/tifa-1.0-st-q4_0.gguf
              (the G2P dictionaries next to it are picked up automatically).
-          3. Import audio files or a folder, choose the text / phones source,
-             then Run.  TextGrids land in the output directory.
+             For the breath/2PASS stages, point the tool at an FBL breath GGUF
+             (scripts/convert_breath_to_gguf.py converts the BreathLab ONNX).
+          3. Import audio files or a folder, choose the annotation source
+             (text/G2P or existing phones), enable the breath/2PASS stages,
+             then run.  TextGrids land in the output directory.
 
           tifa_ggml_cli.exe is the engine; `tifa_ggml_cli.exe --help` lists the
           CLI options (align / inspect / breathe).
           "@ | Set-Content "$root/README.txt"
 
-          Compress-Archive -Path "$root/*" -DestinationPath tifa-aligner-studio-windows-x64.zip
+          Compress-Archive -Path "$root/*" -DestinationPath tifa-label-windows-x64.zip
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: tifa-aligner-studio-windows-x64
-          path: tifa-aligner-studio-windows-x64.zip
+          name: tifa-label-windows-x64
+          path: tifa-label-windows-x64.zip
           retention-days: 14
 
       - name: Publish release
@@ -139,6 +142,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'edge' }}
           name: ${{ github.ref_type == 'tag' && github.ref_name || 'edge build' }}
-          files: tifa-aligner-studio-windows-x64.zip
+          files: tifa-label-windows-x64.zip
           generate_release_notes: true
           prerelease: ${{ github.ref_type != 'tag' }}
