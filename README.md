@@ -24,8 +24,10 @@ text  ──► G2P ──► candidate grid ──► (optional pronunciation s
 
 - **Parity-tested** — layer-by-layer identical to the PyTorch reference
   (spans match exactly; float differences ≤ 1e-3).
-- **Fast** — 0.19 s for an 8.7 s clip on an RTX 2070 (Vulkan, F16), ~45×
-  realtime; CPU F16 ≈ 2.9 s (≈3× realtime).
+- **Fast** — 0.15 s per file on an RTX 2070 (Vulkan, F16) over the 20-clip
+  benchmark, 42× realtime; CPU F16 11.5× realtime.  The CgMLP depthwise convs
+  run through the dedicated `GGML_OP_CONV_2D_DW` kernel (no im2col) — the same
+  direct path game.cpp uses.
 - **Multilingual G2P** — Chinese (pinyin, hanzi), Cantonese (jyutping),
   Japanese (kana), English (dictionary), with the candidate/pronunciation grid
   the model was trained with.
