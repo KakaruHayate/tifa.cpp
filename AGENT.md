@@ -144,6 +144,19 @@ order), `spans` **exactly equal**.
   文本会先 lowercase，直接音素不要放普通文本里）。
 - **发布包布局**：`models/{tifa.gguf, dictionaries/, cpp_pinyin/, assets/LstmG2p-Eng.gguf}`。
   GGUF 里 `@dictionaries/...`、`@assets/...` 相对模型目录解析，平铺即失效。
+- **发布包必须在打包处"就地跑一次"**：workflow 组装完 bundle 后，
+  `cd` 进 bundle 目录执行 `./tifa_ggml_cli --version` 与
+  `inspect models/tifa.gguf`，失败即 fail job。教训：2026-10-01 的 GUI 包
+  里 `tifa_ggml_cli.exe` 是 MinGW 链接的（`libgcc_s_seh-1.dll`/
+  `libstdc++-6.dll`/`libwinpthread-1.dll`/`libgomp-1.dll`），而这些 DLL
+  没随包发布 —— 在干净 Windows 上直接加载失败、**零输出退出**。构建树里跑
+  得好好的，所以只有"在打包产物里跑"才暴露得出来。
+- **Windows 构建不要写 `-G Ninja`**：runner 的 PATH 上有 Strawberry Perl 的
+  gcc，Ninja 会优先选它 → MinGW 工具链。留空让 CMake 用默认的 Visual Studio
+  生成器（MSVC）。GUI 包与 CLI 包两个 job 必须用同一套工具链。
+- **`CMAKE_BUILD_RPATH_USE_ORIGIN ON` 不能删**：发布包是把 `build/bin/*`
+  整体拷贝出去的，绝对 RPATH 会让 Linux/macOS 包在用户机上找不到
+  `libggml*.so`/`.dylib`。Windows 无此问题（先搜 exe 所在目录）。
 - **UI 层**：Electron 顶层脚本里不要 `const bridge = window.bridge`
   （contextBridge 属性不可配置，重复声明直接 SyntaxError）；渲染层 API 挂在
   `window.TifaLabel` 供 e2e 驱动（脚本级 const 对 executeJavaScript 不可见）。

@@ -37,6 +37,13 @@ endif()
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
+
+# Release bundles are assembled by copying build/bin/* verbatim, so every binary
+# has to find its sibling shared libraries relative to itself.  Without this the
+# linker bakes in absolute build-tree paths ($ORIGIN on Linux, @loader_path on
+# macOS), and the shipped CLI cannot start on a machine that never saw the build
+# directory.  Windows is unaffected (it searches the exe's directory first).
+set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 if(MSVC)
     foreach(_cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
         string(TOUPPER "${_cfg}" _CFG)

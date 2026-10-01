@@ -206,6 +206,14 @@ jobs:
           The full workflow (TIFA -> FBL -> 2PASS) is documented in
           docs/dataset-workflow.md.
           EOF
+            # Prove the assembled bundle actually runs before archiving it: a
+            # missing runtime library (libgcc on Windows, a wrong RPATH on
+            # Linux/macOS) only shows up away from the build directory.
+            ENGINE=$(basename "${{ matrix.bin }}")
+            ( cd "$PKG" && "./$ENGINE" --version ) \
+              || { echo "bundled engine failed to start" >&2; exit 1; }
+            ( cd "$PKG" && "./$ENGINE" inspect models/tifa.gguf >/dev/null ) \
+              || { echo "bundled engine could not load the bundled model" >&2; exit 1; }
             tar -czf "$PKG.tar.gz" "$PKG"
             ls -la "$PKG.tar.gz"
           done
@@ -242,9 +250,15 @@ jobs:
           "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
           "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
 
+      # No -G here on purpose.  CMake's default generator on Windows is Visual
+      # Studio (MSVC); naming Ninja made CMake pick up the Strawberry-Perl gcc
+      # that sits on the runner's PATH, which linked the engine against MinGW's
+      # libgcc/libstdc++/libwinpthread.  None of those are in the bundle, so the
+      # shipped tifa_ggml_cli.exe could not start on a clean machine at all.
+      # Keep this identical to the cli-bundles job.
       - name: Configure
         run: >
-          cmake -B build -G Ninja
+          cmake -B build
           -DCMAKE_BUILD_TYPE=Release
           -DTIFA_GGML_VULKAN=ON
           -DTIFA_GGML_BUILD_CLI=ON
@@ -277,9 +291,14 @@ jobs:
           # Electron app (unpacked) at the top level ...
           Copy-Item -Recurse -Force "ui/dist/win-unpacked/*" $root
 
-          # ... the engine beside it, where the UI looks for it ...
+          # ... the engine beside it, where the UI looks for it.  ggml is built
+          # shared, so its DLLs have to travel with the exe.
           Copy-Item -Force build/bin/tifa_ggml_cli.exe $root
-          Copy-Item -Force build/bin/*.dll $root
+          $engineDlls = @(Get-ChildItem build/bin/*.dll -ErrorAction SilentlyContinue)
+          if ($engineDlls.Count -eq 0) {
+            throw "build/bin has no ggml DLLs; the engine would not start on a clean machine"
+          }
+          $engineDlls | Copy-Item -Destination $root -Force
 
           # ... and the model + dictionaries under models/.
           New-Item -ItemType Directory -Force -Path "$root/models/dictionaries" | Out-Null
@@ -314,6 +333,24 @@ jobs:
           tifa_ggml_cli.exe is the engine; `tifa_ggml_cli.exe --help` lists the
           CLI options (align / inspect / breathe).
           "@ | Set-Content "$root/README.txt"
+
+          # The bundle is worthless if the engine cannot even start, and a
+          # missing runtime DLL only shows up on a machine without the build
+          # toolchain -- exactly like the user's.  Run it from the bundle's own
+          # directory, against the bundled model, before archiving.
+          Push-Location $root
+          try {
+            $v = & ./tifa_ggml_cli.exe --version 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              throw "bundled engine failed to start (rc=$LASTEXITCODE): $v"
+            }
+            "bundled engine reports: $($v.Trim())"
+            $insp = & ./tifa_ggml_cli.exe inspect models/tifa-1.0-st-q4_0.gguf 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+              throw "bundled engine could not load the bundled model (rc=$LASTEXITCODE): $insp"
+            }
+            ($insp -split "`r?`n" | Select-Object -First 4) -join "`n"
+          } finally { Pop-Location }
 
           Compress-Archive -Path "$root/*" -DestinationPath tifa-label-windows-x64.zip
 
