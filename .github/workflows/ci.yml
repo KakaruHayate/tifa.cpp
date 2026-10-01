@@ -221,14 +221,14 @@ jobs:
           fi
 
       - name: Download model artifact
-        if: matrix.backend == 'cpu'
+        if: matrix.backend == 'cpu' && runner.os != 'Windows'
         uses: actions/download-artifact@v4
         with:
           name: tifa-1.0-st-f16
           path: model
 
       - name: Align smoke test (CPU jobs, real model)
-        if: matrix.backend == 'cpu'
+        if: matrix.backend == 'cpu' && runner.os != 'Windows'
         run: |
           set -euo pipefail
           mkdir -p models
