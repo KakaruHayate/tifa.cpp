@@ -1,6 +1,6 @@
 {
   "name": "tifa-label",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TIFA Label — singing-dataset annotation studio on ggml: TIFA forced alignment + FBL breath AP/SP + 2PASS, batch oriented",
   "main": "src/main.js",
   "scripts": {
