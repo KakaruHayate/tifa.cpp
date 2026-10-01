@@ -636,7 +636,19 @@ std::vector<std::int32_t> Model::Impl::encode_phones(
             }
         }
         if (id < 0) {
-            throw InvalidArgument("phone '" + ph + "' is not in the model vocabulary");
+            // The commonest cause by far is a missing language: the model is
+            // multilingual and its symbols are stored language-qualified
+            // ("zh/zh", "ja/a", ...), so without one nothing resolves and the
+            // error otherwise looks like a vocabulary problem.
+            std::string hint;
+            if (langs.empty()) {
+                hint = " (no language selected -- pass --language/-l, e.g. -l zh;"
+                       " the model's symbols are language-qualified)";
+            } else {
+                hint = " (language '" + langs.front() + "' was selected; check it"
+                       " matches the annotation's language)";
+            }
+            throw InvalidArgument("phone '" + ph + "' is not in the model vocabulary" + hint);
         }
         tokens.push_back(id);
         if (labels_out) labels_out->push_back(ph);

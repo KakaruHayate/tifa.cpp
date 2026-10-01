@@ -44,7 +44,7 @@ USAGE.md                  本文件
 
 ```bash
 # ① 第一遍对齐：文本 + 音频（自动 G2P）
-./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --text-file song.txt -o out
+./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --text-file song.txt -l zh -o out
 
 #    或：已有音素标注（不经过 G2P）
 ./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf \
@@ -54,8 +54,14 @@ USAGE.md                  本文件
 ./tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
 
 # ③ 第二遍对齐（2PASS）
-./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --textgrid out -o out2
+./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --textgrid out -l zh -o out2
 ```
+
+> **`-l` 不能省。** 模型是多语言的，音素表按语言限定（`zh/zh`、`ja/a`…），
+> 不带 `-l` 时 `zh`、`a` 这类音素查不到，会报
+> `phone 'zh' is not in the model vocabulary`。取值：`zh` 普通话、`ja` 日语、
+> `yue` 粤语、`en` 英语（英文走 `--text`/`--text-file` 时用 `-l en`）。
+> PFML 输入自带 `<scope language>`，不需要 `-l`。
 
 完整流程说明见仓库 `docs/dataset-workflow.md`。
 
@@ -131,7 +137,7 @@ shared libraries + `models/`, no GUI.
 
 ```bash
 # (1) first-pass align: text + audio (G2P)
-./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --text-file song.txt -o out
+./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --text-file song.txt -l zh -o out
 
 #     or: existing phone annotations (no G2P)
 ./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf \
@@ -141,8 +147,16 @@ shared libraries + `models/`, no GUI.
 ./tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
 
 # (3) second-pass align (2PASS)
-./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --textgrid out -o out2
+./tifa_ggml_cli align song.wav -m models/tifa-1.0-st-q4_0.gguf --textgrid out -l zh -o out2
 ```
+
+> **`-l` is not optional.** The model is multilingual and its symbols are
+> language-qualified (`zh/zh`, `ja/a`, ...), so without `-l` a phone such as
+> `zh` or `a` cannot be resolved and the run fails with
+> `phone 'zh' is not in the model vocabulary`. Values: `zh` Mandarin,
+> `ja` Japanese, `yue` Cantonese, `en` English (use `-l en` with
+> `--text`/`--text-file`). PFML input carries its own `<scope language>` and
+> needs no `-l`.
 
 The pipeline rationale lives in `docs/dataset-workflow.md`.
 

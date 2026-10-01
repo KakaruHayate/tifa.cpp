@@ -193,10 +193,12 @@ jobs:
           tifa_ggml_cli -- TIFA forced aligner (see the repository README)
           Bundled model: $MODEL ($PREC precision), dictionaries under models/.
 
-          Quick start:
-            tifa_ggml_cli align song.wav -m models/tifa.gguf --text-file song.txt -o out
+          Quick start (note: -l is required -- the model is multilingual and its
+          symbols are language-qualified, so `zh`, `a`, ... do not resolve
+          without it):
+            tifa_ggml_cli align song.wav -m models/tifa.gguf --text-file song.txt -l zh -o out
             tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
-            tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -o out2
+            tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -l zh -o out2
 
           The breathe/2PASS steps need the FBL breath model; when this bundle has
           no models/breath-*.gguf, convert it from the BreathLab source zip that
