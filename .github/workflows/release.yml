@@ -35,7 +35,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install conversion deps
-        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf
+        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf onnx
 
       - name: Download the TIFA-1.0-ST checkpoint
         run: |
