@@ -2,8 +2,11 @@
 
 Native C++ inference for [openvpi/TIFA](https://github.com/openvpi/TIFA), the
 multilingual forced aligner used to build singing-voice datasets.  Runs on CPU,
-Vulkan, Metal or CUDA with no Python at runtime, and ships with a desktop UI
-for "import audio → export TextGrid annotations".
+Vulkan, Metal or CUDA with no Python at runtime, and ships with **TIFA Label**,
+a desktop tool for the full dataset pipeline: TIFA align → FBL breath AP/SP →
+2PASS re-align.
+
+> [中文说明](README_CN.md) · dataset workflow: [docs/dataset-workflow.md](docs/dataset-workflow.md)
 
 ## What it does
 
@@ -29,10 +32,13 @@ text  ──► G2P ──► candidate grid ──► (optional pronunciation s
   run through the dedicated `GGML_OP_CONV_2D_DW` kernel (no im2col) — the same
   direct path game.cpp uses.
 - **Multilingual G2P** — Chinese (pinyin, hanzi), Cantonese (jyutping),
-  Japanese (kana), English (dictionary), with the candidate/pronunciation grid
-  the model was trained with.
-- **Two input modes** — text+audio (G2P) or a known phoneme sequence
-  (TextGrid / DiffSinger `transcriptions.csv` / a phone list).
+  Japanese (kana), English (dictionary + LSTM OOV inference), with the
+  candidate/pronunciation grid the model was trained with.
+- **PFML input** — the upstream Pronunciation Flow Markup Language: final
+  phonemes (`<word phonemes="zh ong">重</word>`) and language scopes
+  (`<scope language="ja">東京</scope>`) embed directly in the transcript.
+- **Full dataset workflow** — align → `breathe --merge` (FBL AP/SP folded into
+  the phones tier) → 2PASS re-align, in the CLI and in the GUI.
 - **Quantization matrix** — F32/F16/Q8_0/Q4_0 per-tensor recipes with measured
   boundary-error impact (`scripts/quant_matrix.py`).
 
@@ -82,23 +88,43 @@ tifa_ggml_cli align song.wav -m model.gguf -l zh
 tifa_ggml_cli inspect model.gguf
 ```
 
+```bash
+# breath/AP-SP detection; --merge folds the result into a first-pass
+# alignment's phones tier (step 2 of the dataset 2PASS workflow)
+tifa_ggml_cli breathe song.wav -m models/breath-v5-24k.gguf --merge out -o out
+# step 3: re-align with the breath annotation in place
+tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -o out2
+```
+
 `--skip-handling discard|omit|preserve` controls what happens to zero-width
 (skipped) phones; `--skip-penalty` is the raw cosine cost of a skip (0.5
-matches the reference); `--backend cpu|vulkan|cuda|metal|auto` and
+matches the reference); `--oov-handling raise|discard|force` selects the G2P
+out-of-vocabulary policy; `--backend cpu|vulkan|cuda|metal|auto` and
 `--output-formats textgrid,json` are also available.
 
-## UI
+## TIFA Label (desktop tool)
 
-`ui/` is an Electron app (see `ui/README.md`): pick a model, import audio
-(files or a folder), choose the text/phones source, run, then inspect the
-waveform with the three annotation tiers and export the TextGrids.
+`ui/` is an Electron app (see `ui/README.md`) that drives the dataset
+pipeline in one batch run per file:
+
+1. **Import audio** — files or folders (scanned recursively).
+2. **Annotation source** — text/G2P (sidecar `.txt`/`.lab` or a uniform
+   transcript; PFML accepted) or existing phones (same-name TextGrid, a
+   DiffSinger `transcriptions.csv`, a TextGrid folder, an inline list).  The
+   old `.lab + wav` workflow never touches G2P.
+3. **Pipeline** — align → (optional) FBL breath detection merged into the
+   phones tier → (optional) 2PASS re-align.
+
+Per-file status/agreement, progress, streaming log, cancel.  The UI is in
+Chinese.
 
 ## Layout
 
 ```
 src/                 engine: backend / gguf_io / tensor_utils / mel / ops_* / model_tifa
-src/g2p/             pinyin engine, converters, candidate grid, selection
-src/cli/             tifa_ggml_cli
+src/g2p/             pinyin engine, converters (English LSTM, PFML), candidate grid
+src/breath/          FBL breath AP/SP detection on ggml
+src/cli/             tifa_ggml_cli (align / breathe / inspect)
 include/tifa_ggml/   public C++ API (PIMPL, ggml-free headers)
 scripts/             converter, reference dumps, golden comparison, quant matrix, eval
 ui/                  Electron desktop app
