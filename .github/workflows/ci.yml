@@ -279,6 +279,68 @@ jobs:
           path: tifa_ggml-${{ matrix.name }}.tar.gz
           retention-days: 7
 
+  ui-e2e:
+    name: ui end-to-end (real engine + model)
+    needs: prepare-model
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure engine (CPU)
+        run: >
+          cmake -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DTIFA_GGML_BUILD_CLI=ON
+          -DTIFA_GGML_BUILD_TESTS=OFF
+
+      - name: Build engine
+        run: cmake --build build --config Release
+
+      - name: Download model artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tifa-1.0-st-f16
+          path: models
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install UI deps
+        working-directory: ui
+        run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Synthesize a tiny dataset (wav + transcriptions.csv)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path e2e-data/wavs | Out-Null
+          python - <<'PY'
+          import math, struct, wave, pathlib
+          sr, dur = 44100, 3.0
+          out = pathlib.Path("e2e-data/wavs/smoke.wav")
+          with wave.open(str(out), "wb") as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+              w.writeframes(b"".join(
+                  struct.pack("<h", int(0.3 * 32767 * math.sin(2 * math.pi * 220 * i / sr)))
+                  for i in range(int(sr * dur))))
+          pathlib.Path("e2e-data/transcriptions.csv").write_text(
+              "name,ph_seq,ph_dur\nsmoke,AP SP,0.1 0.1\n", encoding="utf-8")
+          print("e2e-data ready")
+          PY
+
+      - name: Run the UI end-to-end (align stage)
+        working-directory: ui
+        env:
+          TIFA_E2E_DATASET: ${{ github.workspace }}/e2e-data
+          TIFA_E2E_SAMPLE: smoke
+          TIFA_GGML_MODEL: ${{ github.workspace }}/models/tifa-1.0-st-f16.gguf
+          TIFA_E2E_BACKEND: cpu
+        run: npx electron scripts/e2e-electron.js
+
   ui:
     name: ui (electron smoke test)
     runs-on: windows-latest
