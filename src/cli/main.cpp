@@ -6,6 +6,7 @@
 #include "audio_io.h"
 #include "breath/breath.h"
 #include "g2p/g2p.h"
+#include "g2p/pfml.h"
 #include "g2p/select.h"
 #include "json.h"
 #include "model_impl.h"
@@ -313,7 +314,11 @@ AlignTokenRequest build_text_request(const Model & model,
     std::vector<std::string> languages;
     if (!language.empty()) languages.push_back(language);
 
-    const std::vector<Word> words = pipeline.convert(text, languages);
+    // Upstream requires PFML for G2P input; a fragment uses direct phonemes /
+    // language scopes, plain text goes through the converters unchanged.
+    const std::vector<Word> words = looks_like_pfml(text)
+        ? convert_pfml(pipeline, text, languages)
+        : pipeline.convert(text, languages);
     const auto lookup = [&](const std::string & symbol) {
         return model.resolve_symbol(symbol, languages);
     };

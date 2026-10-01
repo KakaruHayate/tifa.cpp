@@ -13,6 +13,7 @@ add_executable(tifa_ggml_tests
     test_backend.cpp
     test_decode.cpp
     test_g2p_lstm.cpp
+    test_g2p_pfml.cpp
     test_breathe_merge.cpp
     test_textgrid.cpp
     # the 2PASS merge lives with the CLI's format readers; compiling the unit

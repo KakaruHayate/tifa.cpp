@@ -86,6 +86,7 @@ set(TIFA_GGML_CORE_SOURCES
     src/g2p/encoding.cpp
     src/g2p/select.cpp
     src/g2p/lstm_g2p.cpp
+    src/g2p/pfml.cpp
     src/breath/breath_mel.cpp
     src/breath/breath_net.cpp
     src/breath/breath.cpp
