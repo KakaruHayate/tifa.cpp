@@ -52,7 +52,8 @@ ggml_tensor * embedding(ggml_context * ctx,
 // Two implementations:
 //   * direct: GGML_OP_CONV_2D_DW (dedicated per-channel kernel, no im2col)
 //             — used on every backend that implements it: CPU, Vulkan,
-//             Metal and CUDA (all accept an F32 kernel).
+//             Metal and CUDA (all accept an F32 kernel).  Enabled by the
+//             model loader from the backend name (same gate as game.cpp).
 //   * legacy: ggml_conv_1d_dw (im2col + mul_mat), used on backends without a
 //             CONV_2D_DW kernel, and forceable via TIFA_GGML_DWCONV=legacy;
 //             requires an F16 kernel.

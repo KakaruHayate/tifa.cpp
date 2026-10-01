@@ -18,6 +18,7 @@
 #include <ggml.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -218,6 +219,25 @@ Model Model::load(const std::string & gguf_path) {
     }
 
     impl.backend = internal::init_best_backend();
+
+    // Depthwise convs (the CgMLP branch of every PAC block): use the dedicated
+    // per-channel GGML_OP_CONV_2D_DW kernel (no im2col) on every backend that
+    // implements it — CPU, Vulkan, Metal and CUDA all accept it, and our
+    // direct path casts the stored depthwise weight to the F32 the kernel
+    // reads.  Other/unknown backends fall back to ggml_conv_1d_dw
+    // (im2col + F16).  Same capability gate as game.cpp's model loader;
+    // TIFA_GGML_DWCONV=legacy|direct overrides per process.
+    {
+        std::string bn = internal::backend_name(impl.backend);
+        std::transform(bn.begin(), bn.end(), bn.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const bool direct_ok = bn.find("cpu")    != std::string::npos ||
+                               bn.find("vulkan") != std::string::npos ||
+                               bn.find("cuda")   != std::string::npos ||
+                               bn.find("metal")  != std::string::npos;
+        internal::ops::set_direct_dwconv(direct_ok);
+    }
+
     impl.weights = std::make_unique<internal::LoadedWeights>(
         internal::LoadedWeights::load_all(*impl.gguf, impl.backend));
     impl.w = bind_weights(*impl.weights, impl.cfg);
