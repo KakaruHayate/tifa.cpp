@@ -8,6 +8,21 @@ a desktop tool for the full dataset pipeline: TIFA align → FBL breath AP/SP �
 
 > [中文说明](README_CN.md) · dataset workflow: [docs/dataset-workflow.md](docs/dataset-workflow.md) · bundled usage guide (bilingual): [docs/usage.md](docs/usage.md)
 
+## Download
+
+Prebuilt packages live in [Releases](https://github.com/KakaruHayate/tifa.cpp/releases):
+
+| package | contents |
+|---|---|
+| `tifa-label-windows-x64.zip` | Windows GUI annotator (Electron + engine + Q4_0 model + dictionaries), unpack and run |
+| `tifa-cli-<platform>-full.tar.gz` | CLI, F16 full-precision model |
+| `tifa-cli-<platform>-q4.tar.gz` | CLI, Q4_0 smallest model |
+
+`<platform>` is `windows-x64`, `linux-x64` or `macos-arm64`.  Each archive
+already contains the models, the dictionaries and the MSVC runtime, so it works
+out of the box; see `USAGE.md` inside it (Chinese + English).  To build from
+source see *Build* below.
+
 ## What it does
 
 Given a recording and its text (or an already known phoneme sequence), TIFA

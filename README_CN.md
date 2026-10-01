@@ -6,6 +6,20 @@
 
 > English: [README.md](README.md) · 数据集总流程：[docs/dataset-workflow.md](docs/dataset-workflow.md) · 发布包使用说明（双语）：[docs/usage.md](docs/usage.md)
 
+## 下载
+
+预编译包见 [Releases](https://github.com/KakaruHayate/tifa.cpp/releases)：
+
+| 包 | 内容 |
+|---|---|
+| `tifa-label-windows-x64.zip` | Windows 图形标注工具（Electron + 引擎 + Q4_0 模型 + 词典），解压即用 |
+| `tifa-cli-<平台>-full.tar.gz` | 命令行版，F16 全精度模型 |
+| `tifa-cli-<平台>-q4.tar.gz` | 命令行版，Q4_0 最小模型 |
+
+`<平台>` = `windows-x64` / `linux-x64` / `macos-arm64`。包内已带模型、词典与
+MSVC 运行时，开箱即用；用法见包内 `USAGE.md`（中英双语）。想自己构建见下方
+「构建」。
+
 ## 功能
 
 给定一段录音和它的文本（或已知的音素序列），TIFA 预测音素级时间边界，写出

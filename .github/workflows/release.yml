@@ -56,14 +56,34 @@ jobs:
             -o tifa-1.0-st-q4_0.gguf --dtype f16 \
             --quant-config scripts/quant_q4_all.json
 
-      - name: Download the BreathLab source zip (published on the edge release)
+      - name: Download the BreathLab source zip
+        # The zip is a model-source upload, not a repo file, so it lives on a
+        # release rather than in git.  Prefer this ref's own release (a tag
+        # re-run), and fall back to the rolling `edge` pre-release, which is
+        # where the original upload sits -- otherwise a tagged build would
+        # depend on `edge` continuing to exist.
         # Tolerant: the zip is a model-source upload, not a repo file.  When it
         # is missing the bundles simply ship without a breath model and the
         # quick-start keeps pointing at scripts/convert_breath_to_gguf.py.
         continue-on-error: true
         run: |
-          curl -sL -o breathlab.zip             https://github.com/${{ github.repository }}/releases/download/edge/breathLab_models_dml.zip
-          unzip -q -o breathlab.zip -d breathlab_src
+          for TAG in "${{ github.ref_type == 'tag' && github.ref_name || 'edge' }}" edge; do
+            url="https://github.com/${{ github.repository }}/releases/download/$TAG/breathLab_models_dml.zip"
+            if curl -fsSL -o breathlab.zip "$url"; then
+              echo "breathLab_models_dml.zip <- $TAG"
+              break
+            fi
+            rm -f breathlab.zip
+          done
+          test -s breathlab.zip && unzip -q -o breathlab.zip -d breathlab_src
+
+      - name: Keep the BreathLab source zip for the release
+        uses: actions/upload-artifact@v4
+        with:
+          name: breathlab-source
+          path: breathlab.zip
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Convert the breath/AP detector (FBL)
         continue-on-error: true
@@ -382,10 +402,21 @@ jobs:
           path: dist-gui
           pattern: "tifa-label-*"
 
+      # Re-attach the BreathLab source zip so every release carries it (the
+      # bundles' breath model is converted from it, and users without a
+      # models/breath-*.gguf are told to convert it themselves).  Tolerant:
+      # when the upstream upload could not be fetched there is no artifact.
+      - name: Collect the BreathLab source zip
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-src
+          pattern: "breathlab-source"
+
       - name: Flatten
         run: |
-          mkdir -p out
-          find dist-cli dist-gui -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
+          mkdir -p out dist-src
+          find dist-cli dist-gui dist-src -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
           ls -la out/
 
       - name: Publish release
