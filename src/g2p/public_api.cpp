@@ -126,6 +126,10 @@ bool looks_like_pfml(const std::string & text) {
     return ig2p::looks_like_pfml(text);
 }
 
+void validate_pfml(const std::string & text) {
+    ig2p::validate_pfml(text);
+}
+
 std::string to_pfml(const std::vector<G2PWord> & words) {
     std::vector<ig2p::Word> internal;
     internal.reserve(words.size());

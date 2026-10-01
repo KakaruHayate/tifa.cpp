@@ -34,6 +34,11 @@ bool looks_like_pfml(const std::string & text);
 std::vector<Word> convert_pfml(const Pipeline & pipeline, const std::string & text,
                                const std::vector<std::string> & languages);
 
+// Parse-only check: throws InvalidArgument on malformed markup, returns
+// normally otherwise.  No pipeline, no converters and no vocabulary are
+// involved, so an editor can gate its exports on this without a model.
+void validate_pfml(const std::string & text);
+
 // Serialize words back into a PFML fragment.  A word with a single reading /
 // path / group uses the compact form the documentation shows
 // (`<word text="重" language="zh" script="zhong" phonemes="zh ong"/>`);

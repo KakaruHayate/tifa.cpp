@@ -77,6 +77,13 @@ private:
 // `<path`, `<group` or `<phoneme`).  Plain prose with a stray '<' is not PFML.
 bool looks_like_pfml(const std::string & text);
 
+// Parse-only check of a PFML fragment: throws InvalidArgument on malformed
+// markup and returns normally otherwise.  No pipeline, converters or
+// vocabulary are involved, so an editor can gate its exports on this without
+// loading a model — the aligner skips a sample whose PFML does not parse, with
+// no fallback, which makes this the difference between a typo and a lost line.
+void validate_pfml(const std::string & text);
+
 // Words -> PFML fragment.  A word with a single reading / path / group uses the
 // compact form (`<word text="重" language="zh" script="zhong"
 // phonemes="zh ong"/>`); anything carrying alternatives emits the explicit

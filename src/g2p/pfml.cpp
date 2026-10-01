@@ -530,6 +530,14 @@ std::vector<Word> convert_pfml(const Pipeline & pipeline, const std::string & te
     return words;
 }
 
+void validate_pfml(const std::string & text) {
+    // Syntax only: no converters, no dictionaries, no vocabulary.  An editor
+    // gates its exports on this because the aligner skips a sample whose PFML
+    // does not parse, with no fallback and no diagnostic beyond the skip.
+    Parser parser(text);
+    (void)parser.parse();
+}
+
 namespace {
 
 void append_escaped(std::string & out, const std::string & value) {
