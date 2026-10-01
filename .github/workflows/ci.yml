@@ -1,4 +1,21 @@
-name: CI
+name: ci
+
+# Build + test matrix, mirroring game.cpp: every platform × backend the project
+# supports, on the ggml v0.19.0 anchor.
+#
+#   linux-x64-cpu      — Ubuntu, CPU (GGML_NATIVE + llamafile sgemm), unit tests
+#                        and an end-to-end align smoke on the real model
+#   linux-x64-vulkan   — Ubuntu, Vulkan backend
+#   linux-x64-cuda     — Ubuntu 22.04, CUDA backend (CUDA 12.9)
+#   macos-arm64-metal  — Apple Silicon, Metal backend
+#   macos-x64-metal    — Intel Mac, Metal backend (cross-compiled on ARM runner)
+#   windows-x64-cpu    — Windows, CPU
+#   windows-x64-vulkan — Windows, Vulkan backend (SDK installed by the job)
+#   windows-x64-cuda   — Windows Server 2022, CUDA backend (CUDA 12.9)
+#
+# The prepare-model job converts the released TIFA-1.0-ST checkpoint once; the
+# CPU job turns it into a real inference smoke test (align a synthetic wave
+# with a known phone sequence and check the TextGrid + diagnosis metrics).
 
 on:
   push:
@@ -12,41 +29,115 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux-cpu:
-    name: linux-x64 (CPU)
+  prepare-model:
+    name: prepare f16 GGUF
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Vulkan headers
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install conversion deps
+        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf
+
+      - name: Download the TIFA-1.0-ST checkpoint
+        run: |
+          curl -sL -o TIFA-1.0-ST.zip \
+            https://github.com/openvpi/TIFA/releases/download/v1.0.0/TIFA-1.0-ST.zip
+          unzip -q TIFA-1.0-ST.zip -d model_src
+
+      - name: Convert to F16 GGUF
+        run: |
+          python scripts/convert_tifa_to_gguf.py \
+            --model-dir model_src/TIFA-1.0-ST \
+            -o tifa-1.0-st-f16.gguf --dtype f16
+          ls -la tifa-1.0-st-f16.gguf
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tifa-1.0-st-f16
+          path: tifa-1.0-st-f16.gguf
+          retention-days: 3
+
+  build:
+    name: ${{ matrix.name }}
+    needs: prepare-model
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64-cpu
+            backend: cpu
+            # TEMPORARY ANCHOR — ggml v0.19.0 (see AGENT.md "ggml version
+            # gate").  GGML_NATIVE=ON captures the runner CPU; this job also
+            # exercises GGML_LLAMAFILE=ON (project default).
+            cmake_extra: "-DGGML_NATIVE=ON"
+            build_jobs: 4
+
+          - os: ubuntu-latest
+            name: linux-x64-vulkan
+            backend: vulkan
+            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
+            build_jobs: 4
+
+          - os: ubuntu-22.04
+            name: linux-x64-cuda
+            backend: cuda
+            # CUDA 12.9 + SASS for Turing→Hopper plus Blackwell PTX, same arch
+            # policy as game.cpp: RTX 50-series JIT to native instead of
+            # falling back to compute_75 PTX.
+            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"'
+            build_jobs: 2
+
+          - os: macos-14
+            name: macos-arm64-metal
+            backend: metal
+            cmake_extra: "-DTIFA_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
+            build_jobs: 4
+
+          - os: macos-14
+            name: macos-x64-metal
+            backend: metal
+            cmake_extra: "-DTIFA_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=x86_64"
+            build_jobs: 4
+
+          - os: windows-latest
+            name: windows-x64-cpu
+            backend: cpu
+            cmake_extra: ""
+            build_jobs: 4
+
+          - os: windows-latest
+            name: windows-x64-vulkan
+            backend: vulkan
+            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
+            build_jobs: 4
+
+          - os: windows-2022
+            name: windows-x64-cuda
+            backend: cuda
+            cmake_extra: '-DTIFA_GGML_CUDA=ON -DGGML_NATIVE=OFF -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90;120-virtual"'
+            build_jobs: 2
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK (Linux)
+        if: matrix.backend == 'vulkan' && runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libvulkan-dev glslc spirv-headers spirv-tools
 
-      - name: Configure
-        run: >
-          cmake -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DTIFA_GGML_VULKAN=ON
-          -DTIFA_GGML_BUILD_TESTS=ON
-          -DTIFA_GGML_BUILD_CLI=ON
-
-      - name: Build
-        run: cmake --build build -j
-
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-
-      - name: Smoke test (inspect the reference model if provided)
-        run: build/bin/tifa_ggml_cli --version
-
-  windows-cpu:
-    name: windows-x64 (CPU + Vulkan)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Vulkan SDK
+      - name: Install Vulkan SDK (Windows)
+        if: matrix.backend == 'vulkan' && runner.os == 'Windows'
         shell: pwsh
         run: |
           curl.exe -sL -o "$env:RUNNER_TEMP/vulkan-sdk.exe" `
@@ -60,34 +151,133 @@ jobs:
           "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
           "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
 
-      - name: Detect Vulkan SDK
-        id: vulkan
-        shell: pwsh
+      - name: Install Vulkan SDK (macOS)
+        if: matrix.backend == 'vulkan' && runner.os == 'macOS'
+        run: brew install vulkan-sdk
+
+      - name: Install CUDA Toolkit (Linux)
+        if: matrix.backend == 'cuda' && runner.os == 'Linux'
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: "12.9.0"
+          method: network
+          log-file-suffix: "${{ matrix.name }}.txt"
+
+      - name: Install CUDA Toolkit (Windows)
+        if: matrix.backend == 'cuda' && runner.os == 'Windows'
+        uses: Jimver/cuda-toolkit@v0.2.29
+        with:
+          cuda: "12.9.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          log-file-suffix: "${{ matrix.name }}.txt"
+
+      - name: Verify shader/compiler toolchains
         run: |
-          if ($env:VULKAN_SDK -and (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h")) {
-            "flag=-DTIFA_GGML_VULKAN=ON" >> $env:GITHUB_OUTPUT
-            Write-Host "Vulkan SDK: $env:VULKAN_SDK"
-          } else {
-            "flag=-DTIFA_GGML_VULKAN=OFF" >> $env:GITHUB_OUTPUT
-            Write-Host "no Vulkan SDK on this runner; building CPU-only"
-          }
+          if [ "${{ matrix.backend }}" = "vulkan" ]; then glslc --version; fi
+          if [ "${{ matrix.backend }}" = "cuda" ]; then nvcc --version; fi
+
+      - name: Cache CMake FetchContent
+        # GGML_NATIVE builds bake the runner CPU into object code; never restore
+        # a cache built on another runner for that configuration.
+        if: matrix.name != 'linux-x64-cpu'
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: ${{ matrix.name }}-deps-v1-${{ hashFiles('cmake/Dependencies.cmake') }}
+          restore-keys: |
+            ${{ matrix.name }}-deps-v1-
 
       - name: Configure
-        run: >
-          cmake -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          ${{ steps.vulkan.outputs.flag }}
-          -DTIFA_GGML_BUILD_TESTS=ON
-          -DTIFA_GGML_BUILD_CLI=ON
+        env:
+          GGML_NATIVE: ${{ matrix.name == 'macos-x64-metal' && 'OFF' || '' }}
+        run: |
+          cmake -S . -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DTIFA_GGML_BUILD_CLI=ON \
+                -DTIFA_GGML_BUILD_TESTS=${{ matrix.backend == 'cpu' && 'ON' || 'OFF' }} \
+                ${GGML_NATIVE:+-DGGML_NATIVE=$GGML_NATIVE} \
+                ${{ matrix.cmake_extra }}
 
       - name: Build
-        run: cmake --build build --config Release
+        # ggml-cuda expands many template instances; unbounded parallelism can
+        # exhaust the runner's memory and kill nvcc.
+        run: cmake --build build --parallel ${{ matrix.build_jobs }} --config Release
 
-      - name: Test
+      - name: Unit tests (CPU jobs)
+        if: matrix.backend == 'cpu'
         run: ctest --test-dir build --output-on-failure -C Release
 
-      - name: Version
-        run: build/bin/tifa_ggml_cli.exe --version
+      - name: Version smoke
+        run: |
+          set -euo pipefail
+          ls -la build/bin/
+          if [ "${{ runner.os }}" = "Windows" ] && [ "${{ matrix.backend }}" = "cuda" ]; then
+            # ggml-cuda.dll imports nvcuda.dll (the NVIDIA driver), which the
+            # hosted runner does not have; --version cannot start there.
+            echo "no NVIDIA driver on this runner; skipping the startup smoke"
+          else
+            build/bin/tifa_ggml_cli${{ runner.os == 'Windows' && '.exe' || '' }} --version
+          fi
+
+      - name: Download model artifact
+        if: matrix.backend == 'cpu'
+        uses: actions/download-artifact@v4
+        with:
+          name: tifa-1.0-st-f16
+          path: model
+
+      - name: Align smoke test (CPU jobs, real model)
+        if: matrix.backend == 'cpu'
+        run: |
+          set -euo pipefail
+          mkdir -p models
+          # Synthetic 3 s 220 Hz wave (stdlib only) and a phone sequence that
+          # exists in the model vocabulary.  This exercises mel + network +
+          # Viterbi + TextGrid writing with real weights.
+          PY=$(command -v python3 || command -v python)
+          "$PY" - <<'PY'
+          import math, struct, wave
+          sr, dur = 44100, 3.0
+          with wave.open("smoke.wav", "wb") as w:
+              w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
+              w.writeframes(b"".join(
+                  struct.pack("<h", int(0.3 * 32767 * math.sin(2 * math.pi * 220 * i / sr)))
+                  for i in range(int(sr * dur))))
+          PY
+          build/bin/tifa_ggml_cli --help > /dev/null
+          build/bin/tifa_ggml_cli align smoke.wav \
+            -m model/tifa-1.0-st-f16.gguf \
+            --phones "AP SP" --output-formats textgrid,json -o out-smoke
+          test -s out-smoke/smoke.TextGrid
+          grep -q 'name = "phones"' out-smoke/smoke.TextGrid
+          test -s out-smoke/smoke.diagnosis.json
+          grep -q '"agreement"' out-smoke/smoke.diagnosis.json
+          echo "smoke OK"
+
+      - name: Package CLI bundle
+        run: |
+          set -euo pipefail
+          EXT=""
+          if [ "${{ runner.os }}" = "Windows" ]; then EXT=".exe"; fi
+          PKG="tifa_ggml-${{ matrix.name }}"
+          mkdir -p "$PKG"
+          cp "build/bin/tifa_ggml_cli$EXT" "$PKG/"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            find build/bin -maxdepth 1 -name '*.dll' -exec cp {} "$PKG/" \;
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            find build/bin -maxdepth 1 -name '*.dylib' -exec cp {} "$PKG/" \;
+          else
+            find build/bin -maxdepth 1 -name '*.so*' -exec cp {} "$PKG/" \;
+          fi
+          tar -czf "$PKG.tar.gz" "$PKG"
+          ls -la "$PKG.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-bundle
+          path: tifa_ggml-${{ matrix.name }}.tar.gz
+          retention-days: 7
 
   ui:
     name: ui (electron smoke test)

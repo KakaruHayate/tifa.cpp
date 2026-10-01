@@ -1,11 +1,16 @@
-name: Release
+name: release
 
-# Builds the Windows dataset-annotation bundle:
-#   tifa_ggml_cli.exe + ggml DLLs + Q4_0 model + G2P dictionaries + the
-#   Electron UI, all in one zip.
+# Ships, per release (and to the `edge` pre-release on manual dispatch):
 #
-# Triggered by a v* tag, or manually (workflow_dispatch).  Manual runs publish
-# to the `edge` release so a bundle is always available without tagging.
+#   tifa-label-windows-x64.zip        Windows GUI bundle (Electron + engine
+#                                     + Q4_0 model + dictionaries)
+#   tifa-cli-<platform>-full.tar.gz   CLI bundle, full-precision F16 model
+#   tifa-cli-<platform>-q4.tar.gz     CLI bundle, Q4_0 (smallest) model
+#                                     <platform> = windows-x64 | linux-x64 | macos-arm64
+#
+# Two sibling CLI packages per platform follow the game.cpp convention: the
+# same binaries with different weights, so a host can pick precision per
+# install.  Triggered by a v* tag or manually (workflow_dispatch -> `edge`).
 
 on:
   push:
@@ -16,8 +21,183 @@ permissions:
   contents: write
 
 jobs:
-  windows-bundle:
-    name: windows-x64 bundle
+  # ---------------------------------------------------------------------------
+  # Convert the checkpoint once; every platform bundle reuses these artifacts.
+  # ---------------------------------------------------------------------------
+  convert-model:
+    name: convert TIFA-1.0-ST (F16 + Q4_0)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install conversion deps
+        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf
+
+      - name: Download the TIFA-1.0-ST checkpoint
+        run: |
+          curl -sL -o TIFA-1.0-ST.zip \
+            https://github.com/openvpi/TIFA/releases/download/v1.0.0/TIFA-1.0-ST.zip
+          unzip -q TIFA-1.0-ST.zip -d model_src
+
+      - name: Convert to F16 (full precision)
+        run: |
+          python scripts/convert_tifa_to_gguf.py \
+            --model-dir model_src/TIFA-1.0-ST \
+            -o tifa-1.0-st-f16.gguf --dtype f16
+
+      - name: Convert to Q4_0 (smallest)
+        run: |
+          python scripts/convert_tifa_to_gguf.py \
+            --model-dir model_src/TIFA-1.0-ST \
+            -o tifa-1.0-st-q4_0.gguf --dtype f16 \
+            --quant-config scripts/quant_q4_all.json
+
+      - name: Convert the English LSTM G2P (OOV inference for the en converter)
+        run: |
+          python scripts/convert_lstm_g2p_to_gguf.py             --model-dir model_src/TIFA-1.0-ST/assets/LstmG2p-Eng             -o lstm-g2p-eng.gguf
+
+      - name: Verify the two differ in size (quantization actually applied)
+        run: |
+          F16=$(stat -c%s tifa-1.0-st-f16.gguf)
+          Q4=$(stat -c%s tifa-1.0-st-q4_0.gguf)
+          echo "f16=$F16 q4_0=$Q4"
+          test "$Q4" -lt "$F16"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tifa-models
+          path: |
+            tifa-1.0-st-f16.gguf
+            tifa-1.0-st-q4_0.gguf
+            lstm-g2p-eng.gguf
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Per-platform CLI bundles (full + Q4) with the best backend each supports:
+  # Windows/Linux -> Vulkan, macOS -> Metal (CPU always compiled in).
+  # ---------------------------------------------------------------------------
+  cli-bundles:
+    name: ${{ matrix.name }} CLI bundles
+    needs: convert-model
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
+            bin: build/bin/tifa_ggml_cli.exe
+            libs: "build/bin/*.dll"
+          - os: ubuntu-latest
+            name: linux-x64
+            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
+            bin: build/bin/tifa_ggml_cli
+            libs: "build/bin/*.so*"
+          - os: macos-14
+            name: macos-arm64
+            cmake_extra: "-DTIFA_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
+            bin: build/bin/tifa_ggml_cli
+            libs: "build/bin/*.dylib"
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          curl.exe -sL -o "$env:RUNNER_TEMP/vulkan-sdk.exe" `
+            https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe
+          & "$env:RUNNER_TEMP/vulkan-sdk.exe" --accept-licenses --default-answer --confirm-command install
+          $sdk = Get-ChildItem C:\VulkanSDK -Directory |
+            Sort-Object Name | Select-Object -Last 1
+          if (-not $sdk) { throw "Vulkan SDK installer produced no C:\VulkanSDK\<version> directory" }
+          "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
+          "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
+
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvulkan-dev glslc spirv-headers spirv-tools
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DTIFA_GGML_BUILD_CLI=ON \
+                -DTIFA_GGML_BUILD_TESTS=OFF \
+                ${{ matrix.cmake_extra }}
+
+      - name: Build
+        run: cmake --build build --parallel 4 --config Release
+
+      - name: Download models
+        uses: actions/download-artifact@v4
+        with:
+          name: tifa-models
+
+      - name: Assemble the two bundles
+        run: |
+          set -euo pipefail
+          for PREC in full q4; do
+            if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
+            PKG="tifa-cli-${{ matrix.name }}-$PREC"
+            mkdir -p "$PKG/models"
+            cp "${{ matrix.bin }}" "$PKG/"
+            # shellcheck disable=SC2086
+            cp ${{ matrix.libs }} "$PKG/" 2>/dev/null || true
+            cp "$MODEL" "$PKG/models/tifa.gguf"
+            # G2P dictionaries: the GGUF's g2p config resolves @dictionaries/x
+            # against the model directory, so the flat tables must sit under
+            # models/dictionaries/ and the cpp-pinyin engine under
+            # models/cpp_pinyin/ -- a flat copy into models/ leaves every
+            # lookup pointing at nothing.
+            mkdir -p "$PKG/models/dictionaries" "$PKG/models/assets"
+            cp dicts/*.txt "$PKG/models/dictionaries/"
+            cp -r dicts/cpp_pinyin "$PKG/models/" 2>/dev/null || true
+            # The English converter's model_path is @assets/LstmG2p-Eng; the
+            # converted GGUF lands beside that name so it resolves.
+            cp lstm-g2p-eng.gguf "$PKG/models/assets/LstmG2p-Eng.gguf" 2>/dev/null || true
+            cat > "$PKG/README.txt" <<EOF
+          tifa_ggml_cli -- TIFA forced aligner (see the repository README)
+          Bundled model: $MODEL ($PREC precision), dictionaries under models/.
+
+          Quick start:
+            tifa_ggml_cli align song.wav -m models/tifa.gguf --text-file song.txt -o out
+            tifa_ggml_cli breathe song.wav -m models/breath.gguf --merge out -o out   # 2PASS step 2
+            tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -o out2   # 2PASS step 3
+
+          The full workflow (TIFA -> FBL -> 2PASS) is documented in
+          docs/dataset-workflow.md.
+          EOF
+            tar -czf "$PKG.tar.gz" "$PKG"
+            ls -la "$PKG.tar.gz"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}-cli-bundles
+          path: tifa-cli-${{ matrix.name }}-*.tar.gz
+          retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Windows GUI bundle (TIFA Label): Electron app + engine + Q4 model +
+  # dictionaries, as a single zip.  Also ships the full-precision bundle as a
+  # sibling download for hosts that want the bigger weights.
+  # ---------------------------------------------------------------------------
+  windows-gui:
+    name: windows-x64 GUI bundle
+    needs: convert-model
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,52 +216,22 @@ jobs:
           "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
           "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
 
-      - name: Detect Vulkan SDK
-        id: vulkan
-        shell: pwsh
-        run: |
-          if ($env:VULKAN_SDK -and (Test-Path "$env:VULKAN_SDK\Include\vulkan\vulkan.h")) {
-            "flag=-DTIFA_GGML_VULKAN=ON" >> $env:GITHUB_OUTPUT
-            Write-Host "Vulkan SDK: $env:VULKAN_SDK"
-          } else {
-            "flag=-DTIFA_GGML_VULKAN=OFF" >> $env:GITHUB_OUTPUT
-            Write-Host "::warning::no Vulkan SDK on the runner - the bundle is CPU-only"
-          }
-
       - name: Configure
         run: >
           cmake -B build -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          ${{ steps.vulkan.outputs.flag }}
+          -DTIFA_GGML_VULKAN=ON
           -DTIFA_GGML_BUILD_CLI=ON
           -DTIFA_GGML_BUILD_TESTS=OFF
 
       - name: Build engine
         run: cmake --build build --config Release
 
-      # ---- model -----------------------------------------------------------
-      - uses: actions/setup-python@v5
+      - name: Download models
+        uses: actions/download-artifact@v4
         with:
-          python-version: '3.11'
+          name: tifa-models
 
-      - name: Install conversion deps
-        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf
-
-      - name: Download the TIFA-1.0-ST checkpoint
-        shell: pwsh
-        run: |
-          curl.exe -sL -o TIFA-1.0-ST.zip `
-            https://github.com/openvpi/TIFA/releases/download/v1.0.0/TIFA-1.0-ST.zip
-          Expand-Archive TIFA-1.0-ST.zip -DestinationPath model_src
-
-      - name: Convert to Q4_0 GGUF
-        run: >
-          python scripts/convert_tifa_to_gguf.py
-          --model-dir model_src/TIFA-1.0-ST
-          -o tifa-1.0-st-q4_0.gguf --dtype f16
-          --quant-config scripts/quant_q4_all.json
-
-      # ---- UI --------------------------------------------------------------
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -92,7 +242,6 @@ jobs:
           npm ci
           npx electron-builder --win --dir
 
-      # ---- assemble --------------------------------------------------------
       - name: Assemble the bundle
         shell: pwsh
         run: |
@@ -107,9 +256,15 @@ jobs:
           Copy-Item -Force build/bin/*.dll $root
 
           # ... and the model + dictionaries under models/.
-          New-Item -ItemType Directory -Force -Path "$root/models" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root/models/dictionaries" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$root/models/assets" | Out-Null
           Copy-Item -Force tifa-1.0-st-q4_0.gguf "$root/models/"
-          Copy-Item -Recurse -Force dicts/* "$root/models/"
+          # @dictionaries/... resolves against the model directory; the engine
+          # tables live under cpp_pinyin/ beside it.
+          Copy-Item -Force dicts/*.txt "$root/models/dictionaries/"
+          Copy-Item -Recurse -Force dicts/cpp_pinyin "$root/models/"
+          # English OOV model (model_path @assets/LstmG2p-Eng in the GGUF).
+          Copy-Item -Force lstm-g2p-eng.gguf "$root/models/assets/LstmG2p-Eng.gguf"
 
           Copy-Item -Force README.md "$root/README.md"
           @"
@@ -130,18 +285,43 @@ jobs:
 
           Compress-Archive -Path "$root/*" -DestinationPath tifa-label-windows-x64.zip
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: tifa-label-windows-x64
           path: tifa-label-windows-x64.zip
           retention-days: 14
+
+  # ---------------------------------------------------------------------------
+  # Publish everything to the release (tag) or the `edge` pre-release.
+  # ---------------------------------------------------------------------------
+  publish:
+    name: publish
+    needs: [cli-bundles, windows-gui]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect CLI bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-cli
+          pattern: "*-cli-bundles"
+
+      - name: Collect GUI bundle
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-gui
+          pattern: "tifa-label-*"
+
+      - name: Flatten
+        run: |
+          mkdir -p out
+          find dist-cli dist-gui -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
+          ls -la out/
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'edge' }}
           name: ${{ github.ref_type == 'tag' && github.ref_name || 'edge build' }}
-          files: tifa-label-windows-x64.zip
+          files: out/*
           generate_release_notes: true
           prerelease: ${{ github.ref_type != 'tag' }}
