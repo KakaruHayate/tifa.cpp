@@ -1,12 +1,26 @@
-# TIFA Aligner Studio
+# TIFA Label
 
-Electron desktop UI for **tifa.cpp** — a ggml port of the
-[openvpi/TIFA](https://github.com/openvpi/TIFA) forced aligner.
+Electron desktop tool for **tifa.cpp** — a ggml port of the
+[openvpi/TIFA](https://github.com/openvpi/TIFA) forced aligner — built for
+**dataset annotation**, not for creative editing (that is what game.cpp's
+studio is for).
 
-It is an *import files → export annotations* tool: pick a model, add audio,
-choose where the phones come from, run the compiled `tifa_ggml_cli` and inspect
-what came out (`<name>.TextGrid` with `texts` / `words` / `phones` tiers, plus an
-optional `<name>.diagnosis.json`).
+It drives the full dataset pipeline in batches:
+
+1. **导入音频 / Import audio** — files or folders (scanned recursively).
+2. **标注来源 / Annotation source** — text/G2P (sidecar `<name>.txt`/`.lab`,
+   a uniform transcript, PFML fragments) or existing phones (same-name
+   TextGrid, a DiffSinger `transcriptions.csv`, a TextGrid folder, an inline
+   list).  The old `.lab + wav` workflow never touches G2P.
+3. **数据集流程 / Pipeline** — TIFA align → (optional) FBL breath AP/SP
+   detection merged into the phones tier → (optional) 2PASS re-align.
+
+Per-file status with agreement, progress bar, streaming log, cancel.  The UI
+is in Chinese.  See `docs/dataset-workflow.md` for the pipeline rationale.
+
+The per-file output is `<name>.TextGrid` (with `texts` / `words` / `phones`
+tiers, plus a `breath` tier after the merge stage) and optionally
+`<name>.diagnosis.json`.
 
 ```
 npm install
@@ -65,57 +79,46 @@ directories, output directory, model, CSV, TextGrid folder).
 
 ## Workflow
 
-1. **Model / Engine** — the CLI is detected at startup; **Choose model…** picks a
-   `.gguf` (drag-and-drop onto the window also works) and its `inspect` output
-   (architecture, feature config, vocab size, timestep, backbone) is shown. The
-   last model is remembered across restarts.
-2. **Inputs** — **Add files…**, **Add folder…** (recursive) or drag-drop.
-   `wav` / `flac` / `mp3` are collected; the list shows each file's size, the
-   sidecar that was found next to it and its per-file status.
-3. **Phones source**
-   - *Auto (sidecar)* — `<name>.TextGrid` beside the audio (tier `phones`), else
-     `<name>.txt` / `.lab`, which means **text mode**.
-   - *DiffSinger CSV* — a `transcriptions.csv`; rows are matched by file stem
-     (the `name` column). Files without a row are reported before running.
-   - *TextGrid folder* — the CLI's `--textgrid <dir>` scan.
-   - *Inline phones* — one sequence applied to every file.
-4. **Settings** — language (`-l`, default `zh`), skip handling, skip penalty,
-   output directory (default `<input dir>/out`), backend (`auto|cpu|vulkan`) and
-   the diagnosis-JSON toggle (`--output-formats textgrid,json`). All of it is
-   persisted.
-5. **Run** — files are aligned sequentially, one CLI process per file. A progress
-   bar, a live stderr/stdout log pane and **Cancel** (which kills the running
-   child) are provided; the renderer is never blocked.
-6. **Results** — table of frames, phones, agreement, confidence, determinacy and
-   monotonicity, sorted worst-first by a chosen metric (`—` when a value is
-   missing). Clicking a row shows a waveform + 3-tier annotation strip: the wav
-   is decoded in the renderer with Web Audio, drawn on a canvas with the TextGrid
-   intervals overlaid, hovering a phone shows its label and start/end, and
-   **Play** plays from the clicked position.
-7. **Export** — **Open output folder** (`shell.openPath`) and **Save table as
-   CSV**.
+1. **Engine / models** — the CLI is detected at startup (**定位引擎…** overrides
+   it).  **选择对齐模型…** picks the TIFA `.gguf`; **选择呼吸模型…** picks the
+   FBL breath `.gguf` required by the breath/2PASS stages.  Both are
+   remembered across restarts.
+2. **① 导入音频** — **添加文件…**, **添加文件夹…** (recursive) or drag-drop;
+   the list shows each file's size, the sidecar it found and its status.
+3. **② 标注来源 / annotation source**
+   - *文本转录（自动 G2P）* — text per file (`<name>.txt` / `.lab` beside the
+     audio) or one uniform transcript; PFML fragments are accepted verbatim
+     (`<word phonemes="zh ong">重</word>` skips the dictionary entirely).
+   - *已有音素标注* — same-name `<name>.TextGrid` (auto), a DiffSinger
+     `transcriptions.csv`, a TextGrid folder, or one inline phone sequence
+     applied to every file.  This path never invokes G2P, so the classic
+     `.lab + wav` workflow stays untouched.
+4. **③ 数据集流程 / pipeline** — first-pass align (always), FBL breath
+   detection merged into the phones tier (optional, needs the breath model),
+   2PASS re-align (optional, needs the breath stage).  Advanced options:
+   diagnosis JSON, backend, zero-width handling, skip penalty, quiet.
+5. **Run** — per file, the enabled stages run in order as separate CLI
+   processes; the list shows live status and agreement, a progress bar covers
+   the batch, the log pane streams stdout/stderr and **取消** kills the
+   running child.
 
-Startup never depends on a configured model: with no model the window opens and
-**Align** stays disabled.
-
-## Text mode
-
-When a `<name>.txt` / `.lab` sits beside the audio, the UI calls the CLI with no
-phone flags (`align <file> -m <model> -l <lang> …`) so that a future `--text` /
-sidecar text mode is picked up automatically. The CLI in this tree has no
-`--text` yet, so such a file fails with `no phone source: pass --phones/…`; that
-is reported as *"text mode not available in this CLI build"* with the CLI's
-stderr shown verbatim in the log.
+Outputs per file: `<name>.TextGrid` (plus the `breath` tier after the merge
+stage) and, when enabled, `<name>.diagnosis.json`.
 
 ## CLI contract used
 
 ```
 tifa_ggml_cli align <audio> -m <model.gguf> -o <outdir> -l zh
+  [--text STR | --text-file <f>]                  # text/G2P (PFML accepted)
   [--textgrid <file|dir>] [--phones-tier phones]
   [--transcriptions-csv <csv>] [--key <id>]
   [--phones "AP zh e n"] [--phones-file <f>]
+  [--oov-handling raise|discard|force]
   [--skip-handling discard|omit|preserve] [--skip-penalty F]
   [--output-formats textgrid,json] [--backend auto|cpu|vulkan|cuda|metal] [-q]
+
+tifa_ggml_cli breathe <audio> -m <breath.gguf> -o <outdir>
+  [--merge <file|dir>] [--min-insert-ms 50] [-q]
 ```
 
 Writes `<outdir>/<stem>.TextGrid` and, with `json`, `<outdir>/<stem>.diagnosis.json`:
@@ -148,7 +151,7 @@ parsing, `inspect` parsing, sidecar resolution, CLI argument construction,
 worst-first table sorting and CSV export.  With `--cli` it additionally runs
 `tifa_ggml_cli` on `sample_0_0.wav` through `buildAlignArgs`, checks the exact
 output file names and the diagnosis schema, builds the results row and confirms
-the text-mode failure path (`no phone source`).
+the text-mode path (`--text` + sidecar .txt/`.lab`).
 
 **2. Renderer, headless** (real Electron window, driven through
 `executeJavaScript` — no clicking required):
@@ -157,12 +160,13 @@ the text-mode failure path (`no phone source`).
 npm run e2e [-- --user-data-dir=<dir>]
 ```
 
-Boots the app, then adds the sample wav, indexes the CSV, aligns it, and checks
-the resulting row, the progress bar, the decoded waveform/peaks, the three
-annotation lanes, the hover tooltip (`label + start/end`), play/pause and the
-CSV export.  It writes to an explicit temp output directory and leaves the
+Boots the app and drives the dataset workflow: engine detection, model load,
+adding a wav, configuring the CSV source, running stage 1, then (when
+`TIFA_E2E_BREATH` is set) the full align -> `breathe --merge` -> 2PASS chain,
+checking per-file status/agreement, the progress bar, the written TextGrid and
+the cancel path.  It writes to explicit temp output directories and leaves the
 dataset untouched.  Options: `TIFA_E2E_DATASET`, `TIFA_E2E_SAMPLE`,
-`TIFA_GGML_MODEL`.
+`TIFA_GGML_MODEL`, `TIFA_E2E_BREATH`, `TIFA_E2E_BACKEND`.
 
 **3. GUI** — `npm start` opens the window; there is no screenshot/automation
 harness here for mouse interaction, so button clicks and the file dialogs are
