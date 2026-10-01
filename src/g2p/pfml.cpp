@@ -109,13 +109,15 @@ struct Attr {
 };
 
 struct Node {
-    enum class Kind { Text, Scope, Word, Phoneme };
+    enum class Kind { Text, Scope, Word, Reading, Path, Group, Phoneme };
     Kind kind = Kind::Text;
     std::string text;          // Text: the run; Word/Phoneme: inner text
-    std::string language;      // scope / word attribute (raw)
-    std::string script;        // word attribute
-    std::vector<std::string> phonemes;   // word attribute (split) or <phoneme> children
+    std::string language;      // scope / word / phoneme attribute (raw)
+    std::string script;        // word / group attribute
+    std::string symbol;        // phoneme attribute
+    std::vector<std::string> phonemes;   // word / group attribute (split)
     bool has_phonemes = false;           // a `phonemes` attribute was present
+    bool has_text_attr = false;          // a `text` attribute was present
     std::vector<Node> children;
 };
 
@@ -193,8 +195,11 @@ private:
 
     Node element(const std::string & name, std::size_t offset) {
         Node node;
-        if (name == "scope")      node.kind = Node::Kind::Scope;
-        else if (name == "word")  node.kind = Node::Kind::Word;
+        if (name == "scope")        node.kind = Node::Kind::Scope;
+        else if (name == "word")    node.kind = Node::Kind::Word;
+        else if (name == "reading") node.kind = Node::Kind::Reading;
+        else if (name == "path")    node.kind = Node::Kind::Path;
+        else if (name == "group")   node.kind = Node::Kind::Group;
         else if (name == "phoneme") node.kind = Node::Kind::Phoneme;
         else parse_error("unknown element <" + name + ">", offset);
 
@@ -203,10 +208,14 @@ private:
         for (const Attr & a : attrs) {
             if (a.name == "language")      node.language = a.value;
             else if (a.name == "script")   node.script = a.value;
+            else if (a.name == "symbol")   node.symbol = a.value;
+            else if (a.name == "text")   { node.text = a.value; node.has_text_attr = true; }
             else if (a.name == "phonemes") {
                 node.phonemes = split_ascii_whitespace(a.value);
                 node.has_phonemes = true;
             }
+            // `language-kind` is accepted and ignored: this model has no
+            // separate "ANY" tag, an empty language already means any.
             // unknown attributes are ignored (forward compatibility)
         }
         const bool self_closing = [&] {
@@ -222,7 +231,9 @@ private:
         }();
 
         if (self_closing) {
-            if (node.kind == Node::Kind::Scope) parse_error("<scope/> cannot be self-closing", offset);
+            if (node.kind == Node::Kind::Scope)   parse_error("<scope/> cannot be self-closing", offset);
+            if (node.kind == Node::Kind::Reading) parse_error("<reading/> cannot be self-closing", offset);
+            if (node.kind == Node::Kind::Path)    parse_error("<path/> cannot be self-closing", offset);
             return node;
         }
         node.children = children(name);
@@ -286,24 +297,120 @@ std::vector<std::string> languages_of(const std::string & language,
     return tags.empty() ? fallback : tags;
 }
 
-// One word from direct final phonemes: a single reading / path / group.  The
-// group script label falls back to the word text (or the joined phonemes)
-// when no `script` attribute is given.
-Word direct_word(const std::string & text, const std::string & language,
-                 const std::string & script, std::vector<std::string> phonemes) {
-    Word word;
-    if (!text.empty()) {
-        word.text = text;
-    } else {
-        for (const std::string & p : phonemes) {
-            if (!word.text.empty()) word.text.push_back(' ');
-            word.text += p;
+std::string join_with_spaces(const std::vector<std::string> & parts) {
+    std::string out;
+    for (std::size_t i = 0; i < parts.size(); ++i) {
+        if (i != 0) out.push_back(' ');
+        out += parts[i];
+    }
+    return out;
+}
+
+std::string first_language_tag(const std::string & language) {
+    const std::vector<std::string> tags = split_language_tags(language);
+    return tags.empty() ? std::string() : tags.front();
+}
+
+std::string text_children(const Node & node) {
+    std::string joined;
+    for (const Node & child : node.children) {
+        if (child.kind == Node::Kind::Text) joined += child.text;
+    }
+    return joined;
+}
+
+// One <phoneme> -> its final symbol.  An explicit `language` attribute is
+// prefixed as "<language>/<symbol>"; the symbol itself is never split, so
+// symbol="zh/ong" and language="zh" symbol="ong" both yield "zh/ong".
+std::string phoneme_of(const Node & node) {
+    std::string symbol = node.symbol;
+    if (symbol.empty()) symbol = trim(node.text + text_children(node));
+    if (symbol.empty()) return symbol;
+    return node.language.empty() ? symbol : node.language + "/" + symbol;
+}
+
+// One <group> -> Group.  A missing `script` falls back to the phonemes joined
+// with single spaces (PFML 1.0 label filling).
+Group group_of(const Node & node) {
+    Group group;
+    group.phonemes = node.phonemes;
+    for (const Node & child : node.children) {
+        if (child.kind != Node::Kind::Phoneme) continue;
+        const std::string phoneme = phoneme_of(child);
+        if (!phoneme.empty()) group.phonemes.push_back(phoneme);
+    }
+    group.script = node.script.empty() ? join_with_spaces(group.phonemes) : node.script;
+    return group;
+}
+
+// The children of a <path> (or bare <group>/<phoneme> siblings) -> one Path.
+// Consecutive bare phonemes form a single implicit group.
+Path path_of(const std::vector<Node> & nodes) {
+    Path path;
+    std::vector<std::string> pending;
+    const auto flush = [&] {
+        if (pending.empty()) return;
+        Group group;
+        group.script   = join_with_spaces(pending);
+        group.phonemes = pending;
+        path.push_back(std::move(group));
+        pending.clear();
+    };
+    for (const Node & node : nodes) {
+        if (node.kind == Node::Kind::Group) {
+            flush();
+            path.push_back(group_of(node));
+        } else if (node.kind == Node::Kind::Phoneme) {
+            const std::string phoneme = phoneme_of(node);
+            if (!phoneme.empty()) pending.push_back(phoneme);
         }
     }
-    const std::vector<std::string> tags = split_language_tags(language);
-    word.language = tags.empty() ? std::string() : tags.front();
+    flush();
+    return path;
+}
+
+// The children of a <reading> (or bare <path>/... siblings) -> its Paths.
+std::vector<Path> paths_of(const std::vector<Node> & nodes) {
+    std::vector<Path> paths;
+    for (const Node & node : nodes) {
+        if (node.kind == Node::Kind::Path) paths.push_back(path_of(node.children));
+    }
+    if (paths.empty()) paths.push_back(path_of(nodes));
+    return paths;
+}
+
+// The pronunciation children of a <word> (or of the fragment) -> Readings.
+// Containers may be omitted at any level; siblings must share one level.
+std::vector<Reading> readings_of(const std::vector<Node> & nodes) {
+    std::vector<Reading> readings;
+    for (const Node & node : nodes) {
+        if (node.kind == Node::Kind::Reading) readings.push_back(Reading{ paths_of(node.children) });
+    }
+    if (readings.empty()) readings.push_back(Reading{ paths_of(nodes) });
+    return readings;
+}
+
+// Word text fallback when neither a `text` attribute nor character data is
+// present: the phonemes of the first path, joined with spaces.
+std::string phonemes_as_text(const std::vector<Reading> & readings) {
+    if (readings.empty() || readings.front().paths.empty()) return std::string();
+    std::vector<std::string> phonemes;
+    for (const Group & group : readings.front().paths.front()) {
+        phonemes.insert(phonemes.end(), group.phonemes.begin(), group.phonemes.end());
+    }
+    return join_with_spaces(phonemes);
+}
+
+// A compact `<word ... script="x" phonemes="a b">` is one reading / one path /
+// one group; the script label falls back to the word text (the pre-existing
+// behaviour for this form).
+Word compact_word(const std::string & text, const std::string & language,
+                  const std::string & script, std::vector<std::string> phonemes) {
+    Word word;
+    word.text = text.empty() ? join_with_spaces(phonemes) : text;
+    word.language = first_language_tag(language);
     Group group;
-    group.script = script.empty() ? word.text : script;
+    group.script   = script.empty() ? word.text : script;
     group.phonemes = std::move(phonemes);
     word.readings = { Reading{ { Path{ std::move(group) } } } };
     return word;
@@ -312,15 +419,17 @@ Word direct_word(const std::string & text, const std::string & language,
 void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes,
                       const std::vector<std::string> & languages,
                       std::vector<Word> & out) {
-    // Consecutive <phoneme> siblings group into one word (the containers
-    // around a phoneme run may be omitted).
-    std::vector<std::string> pending_phonemes;
+    // Consecutive pronunciation elements with no <word> around them group into
+    // one word (the containers are optional at the fragment level too).
+    std::vector<Node> pending;
 
-    const auto flush_phonemes = [&] {
-        if (pending_phonemes.empty()) return;
-        out.push_back(direct_word(std::string(), std::string(), std::string(),
-                                  std::move(pending_phonemes)));
-        pending_phonemes.clear();
+    const auto flush_pending = [&] {
+        if (pending.empty()) return;
+        Word word;
+        word.readings = readings_of(pending);
+        word.text     = phonemes_as_text(word.readings);
+        out.push_back(std::move(word));
+        pending.clear();
     };
 
     for (const Node & node : nodes) {
@@ -328,39 +437,47 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
             case Node::Kind::Text: {
                 const std::string run = node.text;
                 if (trim(run).empty()) continue;   // inter-tag whitespace
-                flush_phonemes();
+                flush_pending();
                 std::vector<Word> words = pipeline.convert(run, languages);
                 out.insert(out.end(), std::make_move_iterator(words.begin()),
                            std::make_move_iterator(words.end()));
                 break;
             }
             case Node::Kind::Scope: {
-                flush_phonemes();
+                flush_pending();
                 convert_children(pipeline, node.children,
                                  languages_of(node.language, languages), out);
                 break;
             }
             case Node::Kind::Word: {
-                flush_phonemes();
-                // <phoneme> children of a <word> are its phonemes
-                std::vector<std::string> phonemes = node.phonemes;
-                for (const Node & child : node.children) {
-                    if (child.kind != Node::Kind::Phoneme) continue;
-                    if (!child.text.empty()) phonemes.push_back(child.text);
-                    phonemes.insert(phonemes.end(), child.phonemes.begin(),
-                                    child.phonemes.end());
+                flush_pending();
+                const std::string inner = node.has_text_attr ? node.text
+                                                             : trim(text_children(node));
+                if (node.has_text_attr && !trim(text_children(node)).empty()) {
+                    parse_error("<word> has both a text attribute and character data", 0);
                 }
-                const std::string inner = trim([&] {
-                    std::string joined;
-                    for (const Node & child : node.children) {
-                        if (child.kind == Node::Kind::Text) joined += child.text;
-                    }
-                    return joined;
-                }());
+                bool has_pronunciation = node.has_phonemes;
+                for (const Node & child : node.children) {
+                    if (child.kind != Node::Kind::Text) { has_pronunciation = true; break; }
+                }
 
-                if (node.has_phonemes || !phonemes.empty()) {
-                    out.push_back(direct_word(inner, node.language, node.script,
-                                              std::move(phonemes)));
+                if (has_pronunciation) {
+                    if (node.has_phonemes) {
+                        std::vector<std::string> phonemes = node.phonemes;
+                        for (const Node & child : node.children) {
+                            if (child.kind != Node::Kind::Phoneme) continue;
+                            const std::string phoneme = phoneme_of(child);
+                            if (!phoneme.empty()) phonemes.push_back(phoneme);
+                        }
+                        out.push_back(compact_word(inner, node.language, node.script,
+                                                   std::move(phonemes)));
+                        break;
+                    }
+                    Word word;
+                    word.language = first_language_tag(node.language);
+                    word.readings = readings_of(node.children);
+                    word.text     = inner.empty() ? phonemes_as_text(word.readings) : inner;
+                    out.push_back(std::move(word));
                     break;
                 }
                 if (inner.empty()) break;   // <word language="zh"></word>
@@ -370,21 +487,16 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                            std::make_move_iterator(words.end()));
                 break;
             }
+            case Node::Kind::Reading:
+            case Node::Kind::Path:
+            case Node::Kind::Group:
             case Node::Kind::Phoneme: {
-                // inner text is the phoneme name (children hold it)
-                std::string text = node.text;
-                for (const Node & child : node.children) {
-                    if (child.kind == Node::Kind::Text) text += child.text;
-                }
-                text = trim(text);
-                if (!text.empty()) pending_phonemes.push_back(text);
-                pending_phonemes.insert(pending_phonemes.end(),
-                                        node.phonemes.begin(), node.phonemes.end());
+                pending.push_back(node);
                 break;
             }
         }
     }
-    flush_phonemes();
+    flush_pending();
 }
 
 }  // namespace
@@ -416,6 +528,74 @@ std::vector<Word> convert_pfml(const Pipeline & pipeline, const std::string & te
     std::vector<Word> words;
     convert_children(pipeline, nodes, languages, words);
     return words;
+}
+
+namespace {
+
+void append_escaped(std::string & out, const std::string & value) {
+    for (const char c : value) {
+        switch (c) {
+            case '&':  out += "&amp;";  break;
+            case '<':  out += "&lt;";   break;
+            case '>':  out += "&gt;";   break;
+            case '"':  out += "&quot;"; break;
+            default:   out.push_back(c); break;
+        }
+    }
+}
+
+}  // namespace
+
+std::string to_pfml(const std::vector<Word> & words) {
+    std::string out;
+    for (const Word & word : words) {
+        out += "<word text=\"";
+        append_escaped(out, word.text);
+        out += "\" language=\"";
+        append_escaped(out, word.language);
+        out += "\"";
+
+        // A word with a single reading / path / group serializes to the
+        // compact form the documentation uses:
+        //   <word text="重" language="zh" script="zhong" phonemes="zh ong"/>
+        // Everything else needs the explicit container tree, because the
+        // compact attributes cannot express alternatives.
+        if (word.readings.size() == 1 && word.readings[0].paths.size() == 1 &&
+            word.readings[0].paths[0].size() == 1) {
+            const Group & group = word.readings[0].paths[0][0];
+            out += " script=\"";
+            append_escaped(out, group.script);
+            out += "\" phonemes=\"";
+            append_escaped(out, join_with_spaces(group.phonemes));
+            out += "\"/>";
+            continue;
+        }
+
+        out += ">";
+        for (const Reading & reading : word.readings) {
+            out += "<reading>";
+            for (const Path & path : reading.paths) {
+                out += "<path>";
+                for (const Group & group : path) {
+                    out += "<group script=\"";
+                    append_escaped(out, group.script);
+                    out += "\">";
+                    for (const std::string & phoneme : group.phonemes) {
+                        // Verbatim: symbol="zh/ong" and language="zh"
+                        // symbol="ong" are equivalent, so no split is needed.
+                        out += "<phoneme symbol=\"";
+                        append_escaped(out, phoneme);
+                        out += "\"/>";
+                    }
+                    out += "</group>";
+                }
+                out += "</path>";
+            }
+            out += "</reading>";
+        }
+        out += "</word>";
+    }
+    return out;
 }
 
 }  // namespace tifa_ggml::internal::g2p

@@ -34,4 +34,15 @@ bool looks_like_pfml(const std::string & text);
 std::vector<Word> convert_pfml(const Pipeline & pipeline, const std::string & text,
                                const std::vector<std::string> & languages);
 
+// Serialize words back into a PFML fragment.  A word with a single reading /
+// path / group uses the compact form the documentation shows
+// (`<word text="重" language="zh" script="zhong" phonemes="zh ong"/>`);
+// anything carrying alternatives emits the explicit
+// <reading>/<path>/<group>/<phoneme> tree.
+//
+// Round-trip guarantee: convert_pfml(pipeline, to_pfml(words), languages)
+// reproduces `words` — the data model, not the original spelling or attribute
+// order (same contract as g2pflow's to_pfml).
+std::string to_pfml(const std::vector<Word> & words);
+
 }  // namespace tifa_ggml::internal::g2p

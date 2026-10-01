@@ -8,7 +8,9 @@
 #include "g2p.h"
 
 #include "json.h"
+#ifndef TIFA_G2P_NO_LSTM
 #include "lstm_g2p.h"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -746,6 +748,11 @@ private:
 // scripts/convert_lstm_g2p_to_gguf.py and runs on ggml graphs through the
 // GGML_OP_LSTM sweep op (lstm_g2p.h; CPU backend — the beam loop gives a GPU
 // nothing to do).
+//
+// This is the only converter that needs ggml, so a build without the model
+// (TIFA_G2P_NO_LSTM, used by the standalone tifa_ggml_g2p target) omits it and
+// leaves English OOV words to the dictionary.
+#ifndef TIFA_G2P_NO_LSTM
 class LstmConverter : public Converter {
 public:
     LstmConverter(std::vector<std::string> languages,
@@ -846,6 +853,7 @@ private:
     std::unique_ptr<LstmG2p> lstm_;
     int                      beam_size_ = 0;   // 0 = the value recorded in the GGUF
 };
+#endif  // TIFA_G2P_NO_LSTM
 
 // g2p/converters/chinese.py:_ChineseScriptConverter
 class ChineseConverter : public ScriptDictionaryConverter {
@@ -1428,6 +1436,9 @@ Pipeline Pipeline::from_config(const std::string & g2p_json, const std::string &
                 // char-LSTM for OOV words.  `model_path` is the reference's
                 // ONNX directory; here it points at the converted GGUF (a
                 // directory is accepted too — <dir>/lstm-g2p.gguf is used).
+#ifdef TIFA_G2P_NO_LSTM
+                warn("converter 'lstm' needs the ggml model backend, skipping");
+#else
                 const std::string model_path = kwarg_path("model_path");
                 if (model_path.empty()) {
                     throw InvalidArgument("converter 'lstm' requires a 'model_path' kwarg");
@@ -1441,6 +1452,7 @@ Pipeline Pipeline::from_config(const std::string & g2p_json, const std::string &
                 }
                 impl.converters.push_back(std::make_unique<LstmConverter>(
                     languages_of({}), kwarg_path("dict_path"), model_path, beam_size));
+#endif
             } else {
                 warn("unsupported converter '" + id + "', skipping");
             }
