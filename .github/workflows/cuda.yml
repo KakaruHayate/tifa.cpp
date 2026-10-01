@@ -7,7 +7,10 @@ name: cuda
 # build never blocks the main matrix; failures here are informational.
 #
 # Triggers: nightly, manual, and release tags (so a tag always gets a fresh
-# CUDA compile attempt next to the shipped bundles).
+# CUDA compile attempt next to the shipped bundles).  On a tag this job runs
+# beside the release workflow rather than inside it: the release publishes as
+# soon as the CPU/Vulkan/Metal bundles are ready, and the CUDA packages are
+# attached to that same release once this job finishes, hours later.
 
 on:
   workflow_dispatch:
@@ -16,6 +19,10 @@ on:
     - cron: '17 3 * * *'
   push:
     tags: ['v*']
+
+permissions:
+  contents: write    # attach the bundles to the release on a tag
+  actions: read      # read the converted models from the release run
 
 jobs:
   build-cuda:
@@ -92,23 +99,84 @@ jobs:
             build/bin/tifa_ggml_cli --version || echo "startup needs the driver; compile is the verification"
           fi
 
+      - name: Fetch the converted models (from this commit's release run)
+        # The release workflow converts the checkpoint once; reuse those models
+        # so a CUDA package has the same layout as the other bundles instead of
+        # being an engine with nothing to run.  Tolerant: when the fetch fails
+        # the package falls back to the engine-only shape it used to have.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # On a tag the release run starts at the same time, so give its model
+          # artifacts time to appear.  On the nightly there is normally no
+          # release run for this exact commit, so try once and move on rather
+          # than waiting out the whole window.
+          TRIES=1
+          if [ "${{ github.ref_type }}" = "tag" ]; then TRIES=40; fi
+          for i in $(seq 1 "$TRIES"); do
+            RUN=$(gh run list --workflow release.yml --commit "$GITHUB_SHA" \
+                    --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+            if [ -n "$RUN" ] && gh run download "$RUN" -n tifa-models -D models_out 2>/dev/null; then
+              echo "models <- release run $RUN"
+              break
+            fi
+            echo "waiting for the release run's model artifacts ($i/$TRIES)"
+            sleep 30
+          done
+          ls -la models_out 2>/dev/null || echo "no models; packaging the engine only"
+
       - name: Package
         run: |
           set -euo pipefail
-          PKG="tifa_ggml-${{ matrix.name }}"
-          mkdir -p "$PKG"
+          mkdir -p dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cp build/bin/tifa_ggml_cli.exe "$PKG/"
-            find build/bin -maxdepth 1 -name '*.dll' -exec cp {} "$PKG/" \;
+            ENGINE=tifa_ggml_cli.exe
+            LIBS=$(find build/bin -maxdepth 1 -name '*.dll')
           else
-            cp build/bin/tifa_ggml_cli "$PKG/"
-            find build/bin -maxdepth 1 -name '*.so*' -exec cp {} "$PKG/" \;
+            ENGINE=tifa_ggml_cli
+            LIBS=$(find build/bin -maxdepth 1 -name '*.so*')
           fi
-          tar -czf "$PKG.tar.gz" "$PKG"
-          ls -la "$PKG.tar.gz"
+
+          BASE="tifa_ggml-${{ matrix.name }}"
+          mkdir -p "$BASE"
+          cp "build/bin/$ENGINE" "$BASE/"
+          for f in $LIBS; do cp "$f" "$BASE/"; done
+
+          if [ ! -f models_out/tifa-1.0-st-q4_0.gguf ]; then
+            # No models: ship the engine alone, as before.
+            tar -czf "dist/$BASE.tar.gz" "$BASE"
+          else
+            for PREC in full q4; do
+              if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
+              B="tifa-cuda-${{ matrix.name }}-$PREC"
+              rm -rf "$B"; cp -r "$BASE" "$B"
+              # Same layout the release bundles use: the GGUF's @dictionaries/
+              # and @assets/ paths resolve against models/.
+              mkdir -p "$B/models/dictionaries" "$B/models/assets"
+              cp "models_out/$MODEL" "$B/models/tifa.gguf"
+              cp dicts/*.txt "$B/models/dictionaries/"
+              cp -r dicts/cpp_pinyin "$B/models/" 2>/dev/null || true
+              cp models_out/lstm-g2p-eng.gguf "$B/models/assets/LstmG2p-Eng.gguf" 2>/dev/null || true
+              cp models_out/breath-v5-24k-f16.gguf "$B/models/" 2>/dev/null || true
+              cp docs/usage.md "$B/USAGE.md"
+              tar -czf "dist/$B.tar.gz" "$B"
+            done
+          fi
+          ls -la dist/
 
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-bundle
-          path: tifa_ggml-${{ matrix.name }}.tar.gz
+          path: dist/*.tar.gz
           retention-days: 14
+
+      - name: Attach the CUDA packages to the release
+        # The release is already published by now (it does not wait for CUDA);
+        # this appends the CUDA packages to it.
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*.tar.gz
+          fail_on_unmatched_files: true

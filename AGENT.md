@@ -172,6 +172,12 @@ order), `spans` **exactly equal**.
   干净 Windows 上没有这些 DLL 就起不来；Electron 自己是静态 CRT，不会顺带
   装上 VC++ 运行时。删掉这段 = 包在装了 redist 的机器上测没事、在干净机器上
   直接打不开。
+- **发布流程**：推 `v*` tag → `release.yml` 自动发正式版（`prerelease: false`，
+  手动 dispatch 才走 `edge`）。`cuda.yml` 同样被 tag 触发，但**不在 release
+  流程里**：正式版不等 CUDA，CUDA 跑完（约 2 小时）由它自己把
+  `tifa-cuda-<平台>-{full,q4}.tar.gz` 补挂到同一个 release 上。CUDA job 的模型
+  是从"同一 commit 的 release run"里取 `tifa-models` artifact 复用的，取不到
+  就退回只含引擎的包——所以它永远不会拖累或破坏正式版。
 - **UI 层**：Electron 顶层脚本里不要 `const bridge = window.bridge`
   （contextBridge 属性不可配置，重复声明直接 SyntaxError）；渲染层 API 挂在
   `window.TifaLabel` 供 e2e 驱动（脚本级 const 对 executeJavaScript 不可见）。
