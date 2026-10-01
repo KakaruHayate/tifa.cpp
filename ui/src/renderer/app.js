@@ -4,7 +4,7 @@
 //
 // 流程（与 docs/dataset-workflow.md 一致）：
 //   ① 第一遍对齐（TIFA）
-//   ② 呼吸检测 AP/SP 并合并（FBL，可选）
+//   ② 呼吸检测 AP/SP 并合并（BreathLab，可选）
 //   ③ 第二遍对齐（2PASS，可选）
 // 每个文件顺序跑完启用的阶段，结果写入输出目录。
 // ---------------------------------------------------------------------------
@@ -402,6 +402,9 @@ async function runAll() {
         renderInputs();
         const args2 = ['breathe', item.path, '-m', S.breathModel, '--merge', outDir,
                        '-o', outDir, '--min-insert-ms', String(s.minInsertMs)];
+        // Always state the format: the CLI now defaults to JSON on, so omitting
+        // the flag would silently ignore an unchecked box.
+        args2.push('--output-formats', s.exportJson ? 'textgrid,json' : 'textgrid');
         if (s.backend && s.backend !== 'auto') args2.push('--backend', s.backend);
         if (s.quiet) args2.push('-q');
         log(`② ${item.name}：${args2.join(' ')}`);
@@ -417,7 +420,7 @@ async function runAll() {
                        '-o', outDir, '--phones-tier', s.phonesTier];
         if (s.language) args3.push('-l', s.language);
         if (s.skipHandling) args3.push('--skip-handling', s.skipHandling);
-        if (s.exportJson) args3.push('--output-formats', 'textgrid,json');
+        if (s.exportJson !== undefined) args3.push('--output-formats', s.exportJson ? 'textgrid,json' : 'textgrid');
         if (s.backend && s.backend !== 'auto') args3.push('--backend', s.backend);
         if (s.quiet) args3.push('-q');
         log(`③ ${item.name}：${args3.join(' ')}`);

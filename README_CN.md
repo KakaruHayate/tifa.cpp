@@ -12,13 +12,15 @@
 
 | 包 | 内容 |
 |---|---|
-| `tifa-label-windows-x64.zip` | Windows 图形标注工具（Electron + 引擎 + Q4_0 模型 + 词典），解压即用 |
+| `tifa-label-<平台>.zip` / `.tar.gz` | 图形标注工具（Electron + 引擎 + 模型 + 词典），解压即用 |
 | `tifa-cli-<平台>-full.tar.gz` | 命令行版，F16 全精度模型 |
 | `tifa-cli-<平台>-q4.tar.gz` | 命令行版，Q4_0 最小模型 |
 
-`<平台>` = `windows-x64` / `linux-x64` / `macos-arm64`。包内已带模型、词典与
-MSVC 运行时，开箱即用；用法见包内 `USAGE.md`（中英双语）。想自己构建见下方
-「构建」。
+`<平台>` = `windows-x64` / `linux-x64` / `macos-arm64`，三个平台都有图形工具与
+命令行包。**每个包都自带模型、词典与运行库，下载一个就能用，不需要自己拼装**；
+用法见包内 `USAGE.md`（中英双语）。想自己构建见下方「构建」。
+
+> macOS 的包未签名，首次打开需右键 →「打开」。
 
 ## 功能
 
@@ -45,7 +47,7 @@ Praat 三层 TextGrid（`texts` / `words` / `phones`），并可选输出自检�
 - **支持 PFML** —— 上游 openvpi 要求的 Pronunciation Flow Markup Language：
   文本里可以直接固定音素与语言区间（`<word phonemes="zh ong">重</word>`、
   `<scope language="ja">東京</scope>`）。
-- **完整数据集流程** —— TIFA 对齐 → FBL 呼吸检测（AP/SP）合并 → 2PASS
+- **完整数据集流程** —— TIFA 对齐 → BreathLab 呼吸检测（AP/SP）合并 → 2PASS
   重对齐，三步均在 CLI 与图形工具中实现（见 dataset-workflow.md）。
 - **量化矩阵** —— F32/F16/Q8_0/Q4_0 逐张量配方与边界误差实测
   （`scripts/quant_matrix.py`）。
@@ -80,7 +82,7 @@ python scripts/convert_lstm_g2p_to_gguf.py \
     --model-dir models/TIFA-1.0-ST/assets/LstmG2p-Eng \
     -o models/assets/LstmG2p-Eng.gguf
 
-# 呼吸检测模型（FBL/BreathLab ONNX → GGUF）
+# 呼吸检测模型（BreathLab，作者 Xiantaidu，ONNX → GGUF）
 python scripts/convert_breath_to_gguf.py \
     --model-dir breathlab/models_dml --name v5_24k -o models/breath-v5-24k.gguf
 ```
@@ -131,9 +133,10 @@ tifa_ggml_cli inspect models/tifa.gguf
 2. **标注来源**：文本转录（自动 G2P，支持 PFML）或已有音素标注
    （自动查找同名 TextGrid / DiffSinger `transcriptions.csv` / TextGrid 文件夹 /
    内联音素序列）——旧工作流的 `.lab + wav` 直接走第二条，不触发 G2P。
-3. **数据集流程**：第一遍对齐 →（可选）FBL 呼吸检测并合并 →（可选）2PASS。
+3. **数据集流程**：第一遍对齐 →（可选）BreathLab 呼吸检测并合并 →（可选）2PASS。
 
-输出 TextGrid（可选附诊断 JSON），逐文件状态与进度、流式日志、可取消。
+输出 TextGrid **与诊断 JSON（默认导出，用于按质量排序、只校对最差的 10%）**，
+逐文件状态与进度、流式日志、可取消。
 界面为中文。发布包里引擎与模型都在程序旁的默认路径上，**开箱即用、无需配置**
 （只有把模型放在别处时才需要手动选择）。
 
@@ -142,7 +145,7 @@ tifa_ggml_cli inspect models/tifa.gguf
 ```
 src/                 引擎：backend / gguf_io / tensor_utils / mel / ops_* / model_tifa
 src/g2p/             拼音引擎、转换器（含英文 LSTM、PFML）、候选网格、选择
-src/breath/          FBL 呼吸检测（BreathLab ONNX 移植为 ggml 图）
+src/breath/          BreathLab 呼吸检测（BreathLab ONNX 移植为 ggml 图）
 src/cli/             tifa_ggml_cli（align / breathe / inspect）
 include/tifa_ggml/   公开 C++ API（PIMPL，头文件不暴露 ggml）
 scripts/             转换器、参考导出、golden 对比、量化矩阵、评测、基准

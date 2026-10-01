@@ -8,27 +8,30 @@
 
 ## 包内有什么
 
-**图形工具包（tifa-label-windows-x64.zip）**
+**图形工具包（`tifa-label-<平台>.zip` / `.tar.gz`，三个平台各一份）**
 
 ```
-TIFA Label.exe            图形界面（数据集标注工具）
-tifa_ggml_cli.exe         对齐引擎（GUI 自动使用）
-ggml*.dll                 引擎依赖
+TIFA Label(.exe / .app)   图形界面（数据集标注工具）
+tifa_ggml_cli(.exe)       对齐引擎（GUI 自动使用）
+ggml*                     引擎依赖（.dll / .so / .dylib）
 models/
-  tifa-1.0-st-*.gguf      对齐模型（full 或 q4）
-  breath-v5-24k-f16.gguf  呼吸检测模型（FBL；可选阶段用）
+  tifa-1.0-st-q4_0.gguf   对齐模型（Q4_0）
+  breath-v5-24k-f16.gguf  呼吸检测模型（BreathLab；可选阶段用）
   dictionaries/           发音词典（中文/粤语/日语/英语）
   cpp_pinyin/             汉语拼音引擎词典
   assets/LstmG2p-Eng.gguf 英文 OOV 推理模型
 USAGE.md                  本文件
 ```
 
-**命令行包（tifa-cli-<平台>-full/-q4.tar.gz）**：同上的引擎 + DLL/动态库 +
-`models/`，没有图形界面。
+**命令行包（`tifa-cli-<平台>-full/-q4.tar.gz`）**：同上的引擎 + 动态库 +
+`models/`，没有图形界面；`full` 用 F16 全精度模型，`q4` 用 Q4_0 最小模型。
+
+> 每个包都自带模型、词典与运行库，**下载一个就能用，不需要自己拼装**。
 
 ## 快速开始（图形界面）
 
-1. 解压后直接运行 `TIFA Label.exe`。
+1. 解压后直接运行：Windows 双击 `TIFA Label.exe`；Linux 运行 `./TIFA Label`；
+   macOS 打开 `TIFA Label.app`（未签名，首次需右键 →「打开」）。
 2. **不需要任何设置**：引擎、对齐模型、呼吸模型都会从程序旁边的默认相对
    路径自动导入（状态灯变绿即就绪）。只有把模型放到别处时才需要手动选择。
 3. 三步得到数据集标注：
@@ -38,7 +41,13 @@ USAGE.md                  本文件
       内联音素序列）。**已有 `.lab`/音素标注的工作流不会触发 G2P。**
    3. **数据集流程**：第一遍对齐 →（可选）呼吸检测 AP/SP 并合并 →
       （可选）2PASS 重对齐。点“开始标注”。
-4. 输出为 `<名称>.TextGrid`（可同时导出诊断 JSON），落在输出目录。
+4. 输出为 `<名称>.TextGrid` 和 `<名称>.diagnosis.json`（诊断信息，默认导出），
+   落在输出目录。
+
+> **诊断 JSON 默认导出**，这是新流程里的重要工具：里面的 `agreement`、
+> `confidence`、`determinacy`、`monotonicity` 可以按文件排序，**只需要人工校对
+> 最差的那 10%**，其余直接过。
+> 不想要的话在高级选项里取消勾选，或命令行传 `--output-formats textgrid`。
 
 ## 快速开始（命令行）
 
@@ -72,7 +81,10 @@ USAGE.md                  本文件
 | `-full` | F16（全精度） | 追求最高对齐质量；体积大 |
 | `-q4` | Q4_0（最小） | 体积约为 full 的一半，边界差异在实测容差内（见仓库 `docs/quant-matrix.md`） |
 
-## 呼吸模型（FBL）
+## 呼吸模型（BreathLab）
+
+呼吸检测用的是 **BreathLab** 模型（作者 [Xiantaidu](https://github.com/Xiantaidu)），
+输出 AP/SP/V 时间线，`breathe --merge` 把 AP/SP 折进 phones 层供 2PASS 使用。
 
 发布包已附带转换好的 `models/breath-v5-24k-f16.gguf`。如果包内没有（源下载
 失败时会省略），可以自行转换——发布页同时提供源文件
@@ -99,15 +111,15 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 
 ## What's in the package
 
-**GUI bundle (`tifa-label-windows-x64.zip`)**
+**GUI bundle (`tifa-label-<platform>.zip` / `.tar.gz`, one per platform)**
 
 ```
-TIFA Label.exe            the dataset annotation GUI
-tifa_ggml_cli.exe         the aligner engine (used by the GUI automatically)
-ggml*.dll                 engine dependencies
+TIFA Label(.exe / .app)   the dataset annotation GUI
+tifa_ggml_cli(.exe)       the aligner engine (used by the GUI automatically)
+ggml*                     engine dependencies (.dll / .so / .dylib)
 models/
-  tifa-1.0-st-*.gguf      aligner weights (full or q4)
-  breath-v5-24k-f16.gguf  FBL breath/AP detector (optional stages)
+  tifa-1.0-st-q4_0.gguf   aligner weights (Q4_0)
+  breath-v5-24k-f16.gguf  BreathLab breath/AP detector (optional stages)
   dictionaries/           pronunciation dictionaries (zh/yue/ja/en)
   cpp_pinyin/             Mandarin pinyin engine tables
   assets/LstmG2p-Eng.gguf English OOV inference model
@@ -115,11 +127,16 @@ USAGE.md                  this file
 ```
 
 **CLI bundle (`tifa-cli-<platform>-full/-q4.tar.gz`)**: the same engine +
-shared libraries + `models/`, no GUI.
+shared libraries + `models/`, no GUI; `full` carries the F16 weights, `q4` the
+Q4_0 ones.
+
+> Every archive is self-contained — **one download is all it takes, nothing has
+> to be assembled by hand**.
 
 ## Quick start (GUI)
 
-1. Unzip and run `TIFA Label.exe`.
+1. Unpack and run it: Windows `TIFA Label.exe`, Linux `./TIFA Label`,
+   macOS `TIFA Label.app` (unsigned: right-click > Open the first time).
 2. **No configuration needed**: the engine, aligner model and breath model are
    picked up automatically from the default relative paths beside the app
    (their status dots turn green).  Manual selection is only for models kept
@@ -129,9 +146,14 @@ shared libraries + `models/`, no GUI.
    2. **Annotation source** — text/G2P (PFML accepted) or existing phones
       (same-name TextGrid / DiffSinger `transcriptions.csv` / TextGrid folder /
       an inline list).  The classic `.lab` workflow never invokes G2P.
-   3. **Pipeline** — first-pass align → (optional) FBL breath AP/SP merged
+   3. **Pipeline** — first-pass align → (optional) BreathLab breath AP/SP merged
       into the phones tier → (optional) 2PASS re-align.  Press start.
-4. Output per file: `<name>.TextGrid` (plus an optional diagnosis JSON).
+4. Output per file: `<name>.TextGrid` and `<name>.diagnosis.json` (default).
+
+> **The diagnosis JSON is exported by default** — it is what makes the workflow
+> scale: sort the files by its `agreement`, `confidence`, `determinacy` and
+> `monotonicity` and **only proof-read the worst ~10%**.  Untick it in the advanced options, or
+> pass `--output-formats textgrid`, to turn it off.
 
 ## Quick start (CLI)
 
@@ -167,7 +189,11 @@ The pipeline rationale lives in `docs/dataset-workflow.md`.
 | `-full` | F16 (full precision) | best alignment quality; larger download |
 | `-q4` | Q4_0 (smallest) | about half the size; boundary drift within the measured tolerances (`docs/quant-matrix.md`) |
 
-## Breath model (FBL)
+## Breath model (BreathLab)
+
+Breath detection uses the **BreathLab** model by
+[Xiantaidu](https://github.com/Xiantaidu).  It emits an AP/SP/V timeline and
+`breathe --merge` folds AP/SP into the phones tier for the 2PASS stage.
 
 The bundles ship `models/breath-v5-24k-f16.gguf`.  When it is absent (the
 source download failed during packaging), convert it yourself from the

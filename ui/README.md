@@ -12,7 +12,7 @@ It drives the full dataset pipeline in batches:
    a uniform transcript, PFML fragments) or existing phones (same-name
    TextGrid, a DiffSinger `transcriptions.csv`, a TextGrid folder, an inline
    list).  The old `.lab + wav` workflow never touches G2P.
-3. **数据集流程 / Pipeline** — TIFA align → (optional) FBL breath AP/SP
+3. **数据集流程 / Pipeline** — TIFA align → (optional) BreathLab breath AP/SP
    detection merged into the phones tier → (optional) 2PASS re-align.
 
 Per-file status with agreement, progress bar, streaming log, cancel.  The UI
@@ -81,7 +81,7 @@ directories, output directory, model, CSV, TextGrid folder).
 
 1. **Engine / models** — the CLI is detected at startup (**定位引擎…** overrides
    it).  **选择对齐模型…** picks the TIFA `.gguf`; **选择呼吸模型…** picks the
-   FBL breath `.gguf` required by the breath/2PASS stages.  Both are
+   BreathLab breath `.gguf` required by the breath/2PASS stages.  Both are
    remembered across restarts.
 2. **① 导入音频** — **添加文件…**, **添加文件夹…** (recursive) or drag-drop;
    the list shows each file's size, the sidecar it found and its status.
@@ -93,7 +93,7 @@ directories, output directory, model, CSV, TextGrid folder).
      `transcriptions.csv`, a TextGrid folder, or one inline phone sequence
      applied to every file.  This path never invokes G2P, so the classic
      `.lab + wav` workflow stays untouched.
-4. **③ 数据集流程 / pipeline** — first-pass align (always), FBL breath
+4. **③ 数据集流程 / pipeline** — first-pass align (always), BreathLab breath
    detection merged into the phones tier (optional, needs the breath model),
    2PASS re-align (optional, needs the breath stage).  Advanced options:
    diagnosis JSON, backend, zero-width handling, skip penalty, quiet.

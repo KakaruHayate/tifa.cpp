@@ -2,15 +2,19 @@ name: release
 
 # Ships, per release (and to the `edge` pre-release on manual dispatch):
 #
-#   tifa-label-windows-x64.zip        Windows GUI bundle (Electron + engine
-#                                     + Q4_0 model + dictionaries)
-#   tifa-cli-<platform>-full.tar.gz   CLI bundle, full-precision F16 model
-#   tifa-cli-<platform>-q4.tar.gz     CLI bundle, Q4_0 (smallest) model
-#                                     <platform> = windows-x64 | linux-x64 | macos-arm64
+#   tifa-label-<platform>.zip/.tar.gz  GUI bundle: Electron app + engine +
+#                                      Q4_0 model + dictionaries + USAGE.md,
+#                                      self-contained -- one download, no setup
+#   tifa-cli-<platform>-full.tar.gz    CLI bundle, full-precision F16 model
+#   tifa-cli-<platform>-q4.tar.gz      CLI bundle, Q4_0 (smallest) model
+#   breathLab_models_dml.zip           upstream source of the BreathLab breath
+#                                      model (by Xiantaidu), for re-conversion
+#                                      <platform> = windows-x64 | linux-x64 | macos-arm64
 #
 # Two sibling CLI packages per platform follow the game.cpp convention: the
 # same binaries with different weights, so a host can pick precision per
 # install.  Triggered by a v* tag or manually (workflow_dispatch -> `edge`).
+# CUDA packages are built by cuda.yml and appended to the same release later.
 
 on:
   push:
@@ -85,7 +89,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Convert the breath/AP detector (FBL)
+      - name: Convert the breath/AP detector (BreathLab)
         continue-on-error: true
         run: |
           python scripts/convert_breath_to_gguf.py             --model-dir breathlab_src/models_dml --name v5_24k             -o breath-v5-24k-f16.gguf
@@ -205,7 +209,7 @@ jobs:
             # The English converter's model_path is @assets/LstmG2p-Eng; the
             # converted GGUF lands beside that name so it resolves.
             cp lstm-g2p-eng.gguf "$PKG/models/assets/LstmG2p-Eng.gguf" 2>/dev/null || true
-            # FBL breath model, converted from the BreathLab source zip that
+            # BreathLab breath model, converted from the BreathLab source zip that
             # ships beside these bundles (absent when that download failed).
             cp breath-v5-24k-f16.gguf "$PKG/models/" 2>/dev/null || true
             cp docs/usage.md "$PKG/USAGE.md"
@@ -220,12 +224,13 @@ jobs:
             tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
             tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -l zh -o out2
 
-          The breathe/2PASS steps need the FBL breath model; when this bundle has
-          no models/breath-*.gguf, convert it from the BreathLab source zip that
+          The breathe/2PASS steps need the BreathLab breath model (by Xiantaidu,
+          https://github.com/Xiantaidu); when this bundle has no
+          models/breath-*.gguf, convert it from the BreathLab source zip that
           is published next to this archive:
             python scripts/convert_breath_to_gguf.py --model-dir models_dml --name v5_24k -o breath.gguf
 
-          The full workflow (TIFA -> FBL -> 2PASS) is documented in
+          The full workflow (TIFA -> BreathLab -> 2PASS) is documented in
           docs/dataset-workflow.md.
           EOF
             # Prove the assembled bundle actually runs before archiving it: a
@@ -247,18 +252,47 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------------
-  # Windows GUI bundle (TIFA Label): Electron app + engine + Q4 model +
-  # dictionaries, as a single zip.  Also ships the full-precision bundle as a
-  # sibling download for hosts that want the bigger weights.
+  # GUI bundles (TIFA Label): the Electron app + engine + Q4 model +
+  # dictionaries + usage guide in ONE archive per platform, so nobody has to
+  # download pieces and assemble them.
+  #   windows-x64 -> .zip        (entries at the archive root, as before)
+  #   linux-x64   -> .tar.gz     (tifa-label/ folder)
+  #   macos-arm64 -> .tar.gz     (tifa-label/ folder, unsigned: Gatekeeper
+  #                               needs a right-click > Open on first launch)
   # ---------------------------------------------------------------------------
-  windows-gui:
-    name: windows-x64 GUI bundle
+  gui-bundles:
+    name: ${{ matrix.name }} GUI bundle
     needs: convert-model
-    runs-on: windows-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
+            asset: tifa-label-windows-x64.zip
+            exe: tifa_ggml_cli.exe
+          - os: ubuntu-latest
+            name: linux-x64
+            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
+            asset: tifa-label-linux-x64.tar.gz
+            exe: tifa_ggml_cli
+          - os: macos-14
+            name: macos-arm64
+            cmake_extra: "-DTIFA_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
+            asset: tifa-label-macos-arm64.tar.gz
+            exe: tifa_ggml_cli
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Vulkan SDK
+      - name: Install Vulkan SDK (Windows)
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
           curl.exe -sL -o "$env:RUNNER_TEMP/vulkan-sdk.exe" `
@@ -272,22 +306,28 @@ jobs:
           "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
           "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
 
-      # No -G here on purpose.  CMake's default generator on Windows is Visual
+      - name: Install Vulkan SDK (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libvulkan-dev glslc spirv-headers spirv-tools
+
+      # No -G on Windows on purpose.  CMake's default generator there is Visual
       # Studio (MSVC); naming Ninja made CMake pick up the Strawberry-Perl gcc
       # that sits on the runner's PATH, which linked the engine against MinGW's
-      # libgcc/libstdc++/libwinpthread.  None of those are in the bundle, so the
-      # shipped tifa_ggml_cli.exe could not start on a clean machine at all.
-      # Keep this identical to the cli-bundles job.
+      # libgcc/libstdc++/libwinpthread -- none of them in the bundle, so the
+      # shipped engine could not start on a clean machine.  Keep this identical
+      # to the cli-bundles job.
       - name: Configure
-        run: >
-          cmake -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DTIFA_GGML_VULKAN=ON
-          -DTIFA_GGML_BUILD_CLI=ON
-          -DTIFA_GGML_BUILD_TESTS=OFF
+        run: |
+          cmake -S . -B build \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DTIFA_GGML_BUILD_CLI=ON \
+                -DTIFA_GGML_BUILD_TESTS=OFF \
+                ${{ matrix.cmake_extra }}
 
       - name: Build engine
-        run: cmake --build build --config Release
+        run: cmake --build build --parallel 4 --config Release
 
       - name: Download models
         uses: actions/download-artifact@v4
@@ -300,86 +340,103 @@ jobs:
 
       - name: Build the Electron app
         working-directory: ui
+        env:
+          # Unsigned macOS build: skip identity discovery instead of failing.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: |
+          set -euo pipefail
           npm ci
-          npx electron-builder --win --dir
+          case "${{ runner.os }}" in
+            Windows) npx electron-builder --win --dir ;;
+            Linux)   npx electron-builder --linux --dir ;;
+            macOS)   npx electron-builder --mac --dir ;;
+          esac
 
       - name: Assemble the bundle
-        shell: pwsh
         run: |
-          $root = "bundle/tifa-label"
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          set -euo pipefail
+          ROOT=bundle/tifa-label
+          rm -rf "$ROOT"; mkdir -p "$ROOT"
 
           # Electron app (unpacked) at the top level ...
-          Copy-Item -Recurse -Force "ui/dist/win-unpacked/*" $root
+          case "${{ matrix.name }}" in
+            windows-x64) APP=ui/dist/win-unpacked ;;
+            linux-x64)   APP=ui/dist/linux-unpacked ;;
+            macos-*)     APP=$(ls -d ui/dist/mac* | head -1) ;;
+          esac
+          test -d "$APP" || { echo "no unpacked Electron app at $APP" >&2; ls -la ui/dist; exit 1; }
+          cp -R "$APP"/* "$ROOT"/
 
-          # ... the engine beside it, where the UI looks for it.  ggml is built
-          # shared, so its DLLs have to travel with the exe.
-          Copy-Item -Force build/bin/tifa_ggml_cli.exe $root
-          $engineDlls = @(Get-ChildItem build/bin/*.dll -ErrorAction SilentlyContinue)
-          if ($engineDlls.Count -eq 0) {
-            throw "build/bin has no ggml DLLs; the engine would not start on a clean machine"
-          }
-          $engineDlls | Copy-Item -Destination $root -Force
+          # ... the engine and its shared libraries beside it, where the UI
+          # looks for them (ggml is built shared, so the libraries must travel).
+          cp "build/bin/${{ matrix.exe }}" "$ROOT"/
+          case "${{ runner.os }}" in
+            Windows) cp build/bin/*.dll   "$ROOT"/ ;;
+            Linux)   cp build/bin/*.so*   "$ROOT"/ ;;
+            macOS)   cp build/bin/*.dylib "$ROOT"/ ;;
+          esac
+          ls "$ROOT" | grep -qiE '^(lib)?ggml' \
+            || { echo "no ggml libraries were copied; the engine would not start" >&2; exit 1; }
 
-          # ... and the model + dictionaries under models/.
-          New-Item -ItemType Directory -Force -Path "$root/models/dictionaries" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$root/models/assets" | Out-Null
-          Copy-Item -Force tifa-1.0-st-q4_0.gguf "$root/models/"
-          # @dictionaries/... resolves against the model directory; the engine
+          # ... and the model + dictionaries under models/.  @dictionaries/...
+          # resolves against the model directory, and the cpp-pinyin engine
           # tables live under cpp_pinyin/ beside it.
-          Copy-Item -Force dicts/*.txt "$root/models/dictionaries/"
-          Copy-Item -Recurse -Force dicts/cpp_pinyin "$root/models/"
+          mkdir -p "$ROOT/models/dictionaries" "$ROOT/models/assets"
+          cp tifa-1.0-st-q4_0.gguf "$ROOT/models/"
+          cp dicts/*.txt "$ROOT/models/dictionaries/"
+          cp -r dicts/cpp_pinyin "$ROOT/models/"
           # English OOV model (model_path @assets/LstmG2p-Eng in the GGUF).
-          Copy-Item -Force lstm-g2p-eng.gguf "$root/models/assets/LstmG2p-Eng.gguf"
-          # FBL breath model (absent when the source download failed).
-          if (Test-Path breath-v5-24k-f16.gguf) {
-            Copy-Item -Force breath-v5-24k-f16.gguf "$root/models/"
-          }
+          cp lstm-g2p-eng.gguf "$ROOT/models/assets/LstmG2p-Eng.gguf"
+          # BreathLab breath model (absent when the source download failed).
+          if [ -f breath-v5-24k-f16.gguf ]; then cp breath-v5-24k-f16.gguf "$ROOT/models/"; fi
 
-          Copy-Item -Force docs/usage.md "$root/USAGE.md"
-          @"
+          cp docs/usage.md "$ROOT/USAGE.md"
+          cat > "$ROOT/README.txt" <<'EOF'
           TIFA Label - quick start (dataset annotation)
           =============================================
-          1. Run "TIFA Label.exe".
-          2. Pick the aligner model:  models/tifa-1.0-st-q4_0.gguf
-             (the G2P dictionaries next to it are picked up automatically).
-             For the breath/2PASS stages pick the bundled breath model:
-             models/breath-v5-24k-f16.gguf (if missing, convert the BreathLab
-             source zip published beside this archive:
+          1. Run "TIFA Label" (Windows: "TIFA Label.exe"; Linux: ./"TIFA Label";
+             macOS: open "TIFA Label.app", right-click > Open the first time).
+          2. The engine and models sit beside the app and are imported
+             automatically - no setup.  Aligner: models/tifa-1.0-st-q4_0.gguf,
+             breath: models/breath-v5-24k-f16.gguf (a BreathLab model by
+             Xiantaidu, https://github.com/Xiantaidu; if it is missing, convert
+             it from the source zip published beside this archive with
              scripts/convert_breath_to_gguf.py).
           3. Import audio files or a folder, choose the annotation source
              (text/G2P or existing phones), enable the breath/2PASS stages,
-             then run.  TextGrids land in the output directory.
+             then run.  Each file yields <name>.TextGrid plus
+             <name>.diagnosis.json (sort by it to proof-read the worst ~10%).
 
-          tifa_ggml_cli.exe is the engine; `tifa_ggml_cli.exe --help` lists the
-          CLI options (align / inspect / breathe).
-          "@ | Set-Content "$root/README.txt"
+          The bundled engine is also usable from the command line:
+            tifa_ggml_cli --help     (align / inspect / breathe)
+          EOF
 
           # The bundle is worthless if the engine cannot even start, and a
-          # missing runtime DLL only shows up on a machine without the build
-          # toolchain -- exactly like the user's.  Run it from the bundle's own
-          # directory, against the bundled model, before archiving.
-          Push-Location $root
-          try {
-            $v = & ./tifa_ggml_cli.exe --version 2>&1 | Out-String
-            if ($LASTEXITCODE -ne 0) {
-              throw "bundled engine failed to start (rc=$LASTEXITCODE): $v"
-            }
-            "bundled engine reports: $($v.Trim())"
-            $insp = & ./tifa_ggml_cli.exe inspect models/tifa-1.0-st-q4_0.gguf 2>&1 | Out-String
-            if ($LASTEXITCODE -ne 0) {
-              throw "bundled engine could not load the bundled model (rc=$LASTEXITCODE): $insp"
-            }
-            ($insp -split "`r?`n" | Select-Object -First 4) -join "`n"
-          } finally { Pop-Location }
+          # missing runtime library only shows up on a machine without the
+          # build toolchain -- exactly like the user's.  Run it from the
+          # bundle's own directory, against the bundled model, before archiving.
+          cd "$ROOT"
+          ./${{ matrix.exe }} --version
+          ./${{ matrix.exe }} inspect models/tifa-1.0-st-q4_0.gguf > /dev/null
+          echo "bundled engine starts and loads the bundled model"
 
-          Compress-Archive -Path "$root/*" -DestinationPath tifa-label-windows-x64.zip
+      - name: Archive
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Entries at the archive root, so extracting gives the app directly
+            # (the UI looks for models/ beside its own executable).
+            powershell -NoProfile -Command \
+              "Compress-Archive -Path 'bundle/tifa-label/*' -DestinationPath '${{ matrix.asset }}' -Force"
+          else
+            tar -czf "${{ matrix.asset }}" -C bundle tifa-label
+          fi
+          ls -la "${{ matrix.asset }}"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: tifa-label-windows-x64
-          path: tifa-label-windows-x64.zip
+          name: tifa-label-${{ matrix.name }}
+          path: ${{ matrix.asset }}
           retention-days: 14
 
   # ---------------------------------------------------------------------------
@@ -387,7 +444,7 @@ jobs:
   # ---------------------------------------------------------------------------
   publish:
     name: publish
-    needs: [cli-bundles, windows-gui]
+    needs: [cli-bundles, gui-bundles]
     runs-on: ubuntu-latest
     steps:
       - name: Collect CLI bundles

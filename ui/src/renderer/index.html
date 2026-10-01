@@ -10,7 +10,7 @@
 <header class="topbar">
   <div class="brand">
     <h1>TIFA Label</h1>
-    <span class="muted small">歌声数据集标注工具 · TIFA + FBL 全流程</span>
+    <span class="muted small">歌声数据集标注工具 · TIFA + BreathLab 全流程</span>
   </div>
   <div class="env">
     <div class="env-row">
@@ -140,7 +140,7 @@
     第一遍对齐 <span class="muted small">（必选：TIFA 整句强制对齐）</span></label>
 
   <label class="chk"><input type="checkbox" id="chk-breath">
-    呼吸检测 AP/SP 并合并 <span class="muted small">（FBL：检测换气，写回 phones 层）</span></label>
+    呼吸检测 AP/SP 并合并 <span class="muted small">（BreathLab：检测换气，写回 phones 层）</span></label>
   <div class="pane" id="pane-breath">
     <div class="row">
       <label>最短插入 <input id="in-min-insert" type="number" min="10" step="10" value="50" style="width:5em"> ms</label>
@@ -159,7 +159,7 @@
   <details class="advanced">
     <summary>高级选项</summary>
     <div class="row">
-      <label class="chk"><input type="checkbox" id="in-export-json"> 同时导出诊断 JSON</label>
+      <label class="chk"><input type="checkbox" id="in-export-json" checked> 同时导出诊断 JSON</label>
       <label>计算后端
         <select id="sel-backend">
           <option value="auto">auto</option><option value="cpu">cpu</option>

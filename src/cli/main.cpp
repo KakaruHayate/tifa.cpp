@@ -56,7 +56,7 @@ Usage:
 Breathe options:
   -m, --model PATH            breath/AP detector GGUF (required)
   -o, --output-dir DIR        output directory (default: input directory)
-      --output-formats LIST   textgrid,json           (default: textgrid)
+      --output-formats LIST   textgrid,json           (default: textgrid,json)
       --backend NAME          auto | cpu | vulkan | cuda | metal
       --merge PATH|DIR        fold the detected AP/SP into the phones tier of
                               the first-pass alignment (<name>.TextGrid) and
@@ -84,7 +84,7 @@ Align options:
       --key ID                row identifier in the csv (default: file stem)
       --skip-handling MODE    discard | omit | preserve   (default: omit)
       --skip-penalty F        raw cosine cost per skipped phone (default: 0.5)
-      --output-formats LIST   textgrid,json               (default: textgrid)
+      --output-formats LIST   textgrid,json           (default: textgrid,json)
       --backend NAME          auto | cpu | vulkan | cuda | metal
       --max-frames N          refuse inputs longer than N mel frames
   -q, --quiet                 only report errors
@@ -139,7 +139,10 @@ struct AlignOptions {
     std::string csv;
     std::string key;
     std::string skip_handling = "omit";
-    std::string output_formats = "textgrid";
+    // JSON on by default: the diagnosis file (confidence, monotonicity,
+    // per-phone scores) is how the dataset workflow triages which clips
+    // need proof-reading.  Pass `--output-formats textgrid` to opt out.
+    std::string output_formats = "textgrid,json";
     std::string backend = "auto";
     std::string dump_dir;
     std::string text;             // inline transcript (every file)
@@ -526,7 +529,10 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
 struct BreatheOptions {
     std::string model;
     std::string output_dir;
-    std::string output_formats = "textgrid";
+    // JSON on by default: the diagnosis file (confidence, monotonicity,
+    // per-phone scores) is how the dataset workflow triages which clips
+    // need proof-reading.  Pass `--output-formats textgrid` to opt out.
+    std::string output_formats = "textgrid,json";
     std::string backend = "auto";
     // 2PASS support: fold the detected AP/SP segments into a phones tier
     // (an alignment produced by `align`), writing the enriched TextGrid that

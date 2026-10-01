@@ -3,7 +3,7 @@
 Native C++ inference for [openvpi/TIFA](https://github.com/openvpi/TIFA), the
 multilingual forced aligner used to build singing-voice datasets.  Runs on CPU,
 Vulkan, Metal or CUDA with no Python at runtime, and ships with **TIFA Label**,
-a desktop tool for the full dataset pipeline: TIFA align → FBL breath AP/SP →
+a desktop tool for the full dataset pipeline: TIFA align → BreathLab breath AP/SP →
 2PASS re-align.
 
 > [中文说明](README_CN.md) · dataset workflow: [docs/dataset-workflow.md](docs/dataset-workflow.md) · bundled usage guide (bilingual): [docs/usage.md](docs/usage.md)
@@ -14,14 +14,17 @@ Prebuilt packages live in [Releases](https://github.com/KakaruHayate/tifa.cpp/re
 
 | package | contents |
 |---|---|
-| `tifa-label-windows-x64.zip` | Windows GUI annotator (Electron + engine + Q4_0 model + dictionaries), unpack and run |
+| `tifa-label-<platform>.zip` / `.tar.gz` | GUI annotator (Electron + engine + model + dictionaries), unpack and run |
 | `tifa-cli-<platform>-full.tar.gz` | CLI, F16 full-precision model |
 | `tifa-cli-<platform>-q4.tar.gz` | CLI, Q4_0 smallest model |
 
-`<platform>` is `windows-x64`, `linux-x64` or `macos-arm64`.  Each archive
-already contains the models, the dictionaries and the MSVC runtime, so it works
-out of the box; see `USAGE.md` inside it (Chinese + English).  To build from
-source see *Build* below.
+`<platform>` is `windows-x64`, `linux-x64` or `macos-arm64` — every platform gets
+both a GUI and a CLI package.  **Each archive already contains the models, the
+dictionaries and the runtime libraries, so one download is all it takes; nothing
+has to be assembled by hand.**  See `USAGE.md` inside it (Chinese + English).  To
+build from source see *Build* below.
+
+> The macOS build is unsigned: right-click > Open the first time.
 
 ## What it does
 
@@ -52,7 +55,7 @@ text  ──► G2P ──► candidate grid ──► (optional pronunciation s
 - **PFML input** — the upstream Pronunciation Flow Markup Language: final
   phonemes (`<word phonemes="zh ong">重</word>`) and language scopes
   (`<scope language="ja">東京</scope>`) embed directly in the transcript.
-- **Full dataset workflow** — align → `breathe --merge` (FBL AP/SP folded into
+- **Full dataset workflow** — align → `breathe --merge` (BreathLab AP/SP folded into
   the phones tier) → 2PASS re-align, in the CLI and in the GUI.
 - **Quantization matrix** — F32/F16/Q8_0/Q4_0 per-tensor recipes with measured
   boundary-error impact (`scripts/quant_matrix.py`).
@@ -127,19 +130,21 @@ pipeline in one batch run per file:
    transcript; PFML accepted) or existing phones (same-name TextGrid, a
    DiffSinger `transcriptions.csv`, a TextGrid folder, an inline list).  The
    old `.lab + wav` workflow never touches G2P.
-3. **Pipeline** — align → (optional) FBL breath detection merged into the
+3. **Pipeline** — align → (optional) BreathLab breath detection merged into the
    phones tier → (optional) 2PASS re-align.
 
-Per-file status/agreement, progress, streaming log, cancel.  The UI is in
-Chinese.  Release bundles need no configuration: the engine and models sit at
-the default relative paths beside the app and are imported automatically.
+Per-file status/agreement, progress, streaming log, cancel.  Each file yields a
+TextGrid **and a diagnosis JSON, exported by default — sort by it and only
+proof-read the worst ~10%**.  The UI is in Chinese.  Release bundles need no
+configuration: the engine and models sit at the default relative paths beside
+the app and are imported automatically.
 
 ## Layout
 
 ```
 src/                 engine: backend / gguf_io / tensor_utils / mel / ops_* / model_tifa
 src/g2p/             pinyin engine, converters (English LSTM, PFML), candidate grid
-src/breath/          FBL breath AP/SP detection on ggml
+src/breath/          BreathLab breath AP/SP detection on ggml
 src/cli/             tifa_ggml_cli (align / breathe / inspect)
 include/tifa_ggml/   public C++ API (PIMPL, ggml-free headers)
 scripts/             converter, reference dumps, golden comparison, quant matrix, eval

@@ -1,9 +1,14 @@
-# 数据集制作流程（TIFA → FBL → 2PASS）
+# 数据集制作流程（TIFA → 呼吸检测 → 2PASS）
 
-> 本文档描述用 tifa.cpp 制作歌声数据集标注的标准流程。核心三步由 TIFA/FBL
-> 作者给出：**先用 TIFA 做一遍强制对齐，再用 FBL 检测 AP/SP 补进标注，最后
-> 用 TIFA 做第二遍（2PASS）对齐**，得到干净的乐句切分与音素边界。
+> 本文档描述用 tifa.cpp 制作歌声数据集标注的标准流程。核心三步由 TIFA 作者
+> 给出：**先用 TIFA 做一遍强制对齐，再把呼吸（AP/SP）补进标注，最后用 TIFA
+> 做第二遍（2PASS）对齐**，得到干净的乐句切分与音素边界。
 > 三个步骤在本仓库的 CLI 里均已实现并通过端到端验证。
+>
+> 中间那步在参考流程里用的是 FBL；本仓库实现的是 **BreathLab** 模型
+> （作者 [Xiantaidu](https://github.com/Xiantaidu)，随发布包附带）——它同样输出
+> AP/SP 时间线，我们把它折进 phones 层再跑 2PASS。下文提到「呼吸检测」时，
+> 指的都是这一步。
 
 ## 总览
 
@@ -14,7 +19,7 @@ wav + 文本/音素序列
    ▼
 <name>.TextGrid                    phones 层：模型放置的音素边界
    │
-   │  ② tifa_ggml_cli breathe --merge  （FBL 检测 AP/SP 并折进 phones 层）
+   │  ② tifa_ggml_cli breathe --merge  （BreathLab 检测 AP/SP 并折进 phones 层）
    ▼
 <name>.TextGrid（覆盖）            phones 层 = 音素 + 检测到的 AP/SP
    │                              breath 层 = AP/SP/V 全程时间线（供检查）
@@ -24,7 +29,7 @@ wav + 文本/音素序列
 ```
 
 为什么需要三步：第一遍对齐只保证"文本对得上音频"；歌手的换气（AP）与停顿
-（SP）不在文本里，模型会把它们算进相邻音素，导致边界偏移。FBL 把呼吸检测出
+（SP）不在文本里，模型会把它们算进相邻音素，导致边界偏移。BreathLab 把呼吸检测出
 来并写回标注，第二遍对齐时模型就能把音素边界排到呼吸两侧，得到干净的乐句
 切分。
 
@@ -49,7 +54,7 @@ tifa_ggml_cli align song.wav -m tifa-1.0-st-q4_0.gguf \
 传入。产物 `<name>.TextGrid` 含 `texts` / `words` / `phones` 三层，以及可选
 的 `<name>.diagnosis.json`（agreement/monotonicity 等自检指标）。
 
-## ② FBL 呼吸检测并合并
+## ② BreathLab 呼吸检测并合并
 
 ```bash
 tifa_ggml_cli breathe song.wav -m breath-v5-24k-f16.gguf \
@@ -87,7 +92,7 @@ DiffSinger 训练数据制作。
 | 步骤 | 实现 | 状态 |
 |---|---|---|
 | ① 第一遍对齐 | `align`（`src/cli/main.cpp`），G2P 管线 `src/g2p/` | ✅ 已有，40+ 中文数据等价性验证 |
-| ② FBL AP/SP | `src/breath/`（BreathLab ONNX 移植为 ggml 图），`breathe` 命令 | ✅ 端到端验证，6 段/2 AP 检测样例 |
+| ② BreathLab AP/SP | `src/breath/`（BreathLab ONNX 移植为 ggml 图），`breathe` 命令 | ✅ 端到端验证，6 段/2 AP 检测样例 |
 | ②→③ 合并器 | `merge_breath_into_phones`（`src/cli/phone_input.cpp`） | ✅ 6 个单元测试锁定行为 |
 | ③ 2PASS | `align --textgrid` + 合并产物 | ✅ 真实数据集 48 音素句子全流程通过 |
 
@@ -118,5 +123,6 @@ python scripts/convert_breath_to_gguf.py \
 
 - 模型与训练：<https://github.com/openvpi/TIFA>
 - 数据集工具（HFA）：<https://github.com/openvpi/dataset-tools>
-- 呼吸检测（FBL/BreathLab）：随附 `breathLab_models_dml.zip`
+- 呼吸检测模型 BreathLab（作者 [Xiantaidu](https://github.com/Xiantaidu)）：
+  随发布包附带 `breathLab_models_dml.zip`（模型源文件）
 - G2P 独立库：<https://github.com/openvpi/g2pflow>

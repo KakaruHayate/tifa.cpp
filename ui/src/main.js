@@ -300,10 +300,10 @@ function registerIpc() {
     return { ok: false, error: 'no models/*.gguf beside the app' };
   });
 
-  // --- breath (FBL) model -------------------------------------------------
+  // --- breath (BreathLab) model -------------------------------------------------
   handle('breath:pick', async () => {
     const r = await dialog.showOpenDialog({
-      title: 'Select breath/AP detector .gguf (FBL)',
+      title: 'Select breath/AP detector .gguf (BreathLab)',
       properties: ['openFile'],
       filters: [{ name: 'GGUF model', extensions: ['gguf'] }, { name: 'All files', extensions: ['*'] }],
       defaultPath: readConfig().breathModel ? path.dirname(readConfig().breathModel) : undefined,
