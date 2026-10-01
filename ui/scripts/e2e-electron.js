@@ -34,6 +34,24 @@ if (!process.argv.some(a => a.startsWith('--user-data-dir'))) {
 
 require('../src/main.js');                       // the real app
 
+// A deterministic long input for the cancel probe: 30 s is several seconds of
+// CPU align work, so the cancel reliably lands mid-run whatever the dataset
+// size is (the CI dataset is a single 3 s clip).
+const CANCEL_WAV = path.join(os.tmpdir(), 'tifa-e2e-cancel-probe.wav');
+function writeSineWav(file, seconds = 30, sr = 44100, hz = 220) {
+  const n = Math.floor(sr * seconds);
+  const data = Buffer.alloc(44 + n * 2);
+  data.write('RIFF', 0); data.writeUInt32LE(36 + n * 2, 4); data.write('WAVE', 8);
+  data.write('fmt ', 12); data.writeUInt32LE(16, 16); data.writeUInt16LE(1, 20);
+  data.writeUInt16LE(1, 22); data.writeUInt32LE(sr, 24); data.writeUInt32LE(sr * 2, 28);
+  data.writeUInt16LE(2, 32); data.writeUInt16LE(16, 34);
+  data.write('data', 36); data.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) {
+    data.writeInt16LE(Math.round(0.3 * 32767 * Math.sin(2 * Math.PI * hz * i / sr)), 44 + i * 2);
+  }
+  fs.writeFileSync(file, data);
+}
+
 const checks = [];
 function check(name, cond, detail) {
   checks.push({ name, ok: !!cond, detail: cond ? undefined : detail });
@@ -105,12 +123,12 @@ const DRIVER = `(async () => {
   // --- cancel kills the running child --------------------------------------
   let cancel = null;
   try {
-    // CPU backend over the whole wavs folder: several seconds of work, so the
-    // cancel below lands mid-run instead of racing a fast finish.
-    const args = ['align', '${DATASET.replace(/\\/g, '/')}/wavs',
-                  '-m', '${MODEL.replace(/\\/g, '/')}', '--transcriptions-csv',
-                  '${DATASET.replace(/\\/g, '/')}/transcriptions.csv',
-                  '-l', 'zh', '-o', '${OUT_DIR}', '--backend', 'cpu'];
+    // CPU backend on a purpose-built 30 s wave: seconds of work, so the
+    // cancel below lands mid-run instead of racing a fast finish (the CI
+    // dataset is a single 3 s file, where a dir-align finishes first).
+    const args = ['align', '${CANCEL_WAV.replace(/\\/g, '/')}',
+                  '-m', '${MODEL.replace(/\\/g, '/')}', '--phones', 'AP SP',
+                  '-o', '${OUT_DIR}', '--backend', 'cpu'];
     const pending = window.bridge.runAlign({ cliPath: S.cliPath, args,
       item: { stem: 'cancel-probe' }, outDir: '${OUT_DIR}', backend: 'cpu' });
     await pause(1200);
@@ -128,6 +146,7 @@ const DRIVER = `(async () => {
 
 app.whenReady().then(async () => {
   const wait = (ms) => new Promise(r => setTimeout(r, ms));
+  if (!fs.existsSync(CANCEL_WAV)) writeSineWav(CANCEL_WAV);
   await wait(2500);                                   // let the renderer boot
   const win = BrowserWindow.getAllWindows()[0];
   if (!win) { console.log('no window'); app.exit(2); return; }
