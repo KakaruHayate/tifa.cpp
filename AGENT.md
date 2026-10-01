@@ -129,11 +129,14 @@ order), `spans` **exactly equal**.
   `ops::set_direct_dwconv(...)`（CPU/Vulkan/CUDA/Metal → true）。忘了它 =
   CgMLP 走 im2col，CPU 慢 4.4×（2.96 s → 0.67 s/8.7 s clip）。新加模型加载
   路径时照抄 `model_tifa.cpp` 的闸门。
-- **ggml 图输入不能放进 gallocr 竞技场**：解码器每次重传的 `in_h` 曾在
-  arena 里与 `out_logits` 同偏移，第二步读到被覆盖的状态。输入张量（图外
-  反复 `ggml_backend_tensor_set` 的那些）一律用独立 context + buffer
-  （见 `lstm_g2p.cpp::GraphRun::allocate_inputs`）；breath 的 taps 同理
-  需要 `ggml_cpy` 复制（AGENT.md §3）。
+- **LSTM 解码器的 `in_h` 必须用独立 buffer**
+  （`lstm_g2p.cpp::GraphRun::allocate_inputs`）：同一张图被反复 compute、
+  每次重传状态，而 gallocr 曾把它的区间复用给 `out_logits`，第二步读到的
+  就是被覆盖的状态。**不要把这条推广到所有图输入** —— TIFA 主模型的输入
+  （`in_mel`/`in_tokens`/mask/位置）按 §2 建在状态图的 context 里、每次
+  compute 前重传即可（golden 验证过的路径）。判断依据是"同一张图是否会被
+  反复 compute 且输入区间可能被后续节点写回"，而不是"输入"这个身份本身。
+- **breath 的 taps 需要 `ggml_cpy` 复制**（AGENT.md §3）。
 - **mid-graph 调试读回先 cpy**：直接读中间节点是活内存，结果随机
   （tifa 词正确、test 词乱码的那类诡异现象即此）。
 - **PFML 是文本入口的一部分**：`build_text_request` 先 `looks_like_pfml`
