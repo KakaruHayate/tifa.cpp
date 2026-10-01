@@ -241,15 +241,8 @@ jobs:
           # exists in the model vocabulary.  This exercises mel + network +
           # Viterbi + TextGrid writing with real weights.
           PY=$(command -v python3 || command -v python)
-          "$PY" - <<'PY'
-          import math, struct, wave
-          sr, dur = 44100, 3.0
-          with wave.open("smoke.wav", "wb") as w:
-              w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
-              w.writeframes(b"".join(
-                  struct.pack("<h", int(0.3 * 32767 * math.sin(2 * math.pi * 220 * i / sr)))
-                  for i in range(int(sr * dur))))
-          PY
+          "$PY" scripts/make_smoke_wav.py --out-dir smoke-data
+          cp smoke-data/wavs/smoke.wav smoke.wav
           build/bin/tifa_ggml_cli --help > /dev/null
           build/bin/tifa_ggml_cli align smoke.wav \
             -m model/tifa-1.0-st-f16.gguf \
@@ -320,22 +313,7 @@ jobs:
           python-version: '3.11'
 
       - name: Synthesize a tiny dataset (wav + transcriptions.csv)
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path e2e-data/wavs | Out-Null
-          python - <<'PY'
-          import math, struct, wave, pathlib
-          sr, dur = 44100, 3.0
-          out = pathlib.Path("e2e-data/wavs/smoke.wav")
-          with wave.open(str(out), "wb") as w:
-              w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr)
-              w.writeframes(b"".join(
-                  struct.pack("<h", int(0.3 * 32767 * math.sin(2 * math.pi * 220 * i / sr)))
-                  for i in range(int(sr * dur))))
-          pathlib.Path("e2e-data/transcriptions.csv").write_text(
-              "name,ph_seq,ph_dur\nsmoke,AP SP,0.1 0.1\n", encoding="utf-8")
-          print("e2e-data ready")
-          PY
+        run: python scripts/make_smoke_wav.py --out-dir e2e-data
 
       - name: Run the UI end-to-end (align stage)
         working-directory: ui
