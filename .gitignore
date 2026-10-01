@@ -81,3 +81,7 @@ golden/
 # G2P differential-test goldens are small JSON and load-bearing.
 !tests/golden/
 !tests/golden/*.json
+
+# Python bytecode (a stray __pycache__ rode into the first commit via 'git add -A').
+__pycache__/
+*.py[cod]
