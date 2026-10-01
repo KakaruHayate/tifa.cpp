@@ -109,7 +109,7 @@ jobs:
             build/bin/tifa_ggml_cli --version || echo "startup needs the driver; compile is the verification"
           fi
 
-      - name: Fetch the converted models (from this commit's release run)
+      - name: Fetch the converted models (from the target release's run)
         # The release workflow converts the checkpoint once; reuse those models
         # so a CUDA package has the same layout as the other bundles instead of
         # being an engine with nothing to run.  Tolerant: when the fetch fails
