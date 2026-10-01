@@ -157,6 +157,16 @@ order), `spans` **exactly equal**.
 - **`CMAKE_BUILD_RPATH_USE_ORIGIN ON` 不能删**：发布包是把 `build/bin/*`
   整体拷贝出去的，绝对 RPATH 会让 Linux/macOS 包在用户机上找不到
   `libggml*.so`/`.dylib`。Windows 无此问题（先搜 exe 所在目录）。
+- **MSVC 必须用 `/EHs`，不能用 CMake 默认的 `/EHsc`**（CMakeLists 顶部有
+  `string(REPLACE "/EHsc" "/EHs" ...)`）：`/EHsc` 的 `c` = "假定 `extern "C"`
+  的函数不会抛异常"，而 ggml 整个 API 都是 `extern "C"`。于是编译器把
+  `init_backend()` 里包着 `ggml_backend_vk_init` 的 try/catch **整个删掉**，
+  Vulkan 初始化抛出的 `vk::SystemError` 直接穿到 `main()` —— 结果是进程直接
+  死掉，而不是回退 CPU。触发条件很常见：机器上装了 Vulkan loader（Electron
+  包自带 `vulkan-1.dll`）但没有可用 ICD。症状是 `error: vk::createInstance:
+  ErrorIncompatibleDriver` 且**没有** "vulkan backend init failed" 那行。
+  验证方法：`VK_ICD_FILENAMES=C:/nonexistent.json tifa_ggml_cli inspect <模型>`
+  应当回退到 CPU 并成功。
 - **UI 层**：Electron 顶层脚本里不要 `const bridge = window.bridge`
   （contextBridge 属性不可配置，重复声明直接 SyntaxError）；渲染层 API 挂在
   `window.TifaLabel` 供 e2e 驱动（脚本级 const 对 executeJavaScript 不可见）。

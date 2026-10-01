@@ -147,7 +147,9 @@ ggml_backend_t init_backend(Backend which) {
 #if defined(TIFA_GGML_HAS_VULKAN)
             // ggml v0.19's Vulkan init propagates vk::SystemError
             // (createInstance: ErrorIncompatibleDriver) when the Vulkan
-            // loader is present but no ICD claims the machine.
+            // loader is present but no ICD claims the machine.  Catching this
+            // only works because we compile with /EHs and not CMake's default
+            // /EHsc -- see the note in CMakeLists.txt.
             try {
                 return ggml_backend_vk_init(0);
             } catch (const std::exception & e) {

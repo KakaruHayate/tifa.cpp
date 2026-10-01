@@ -45,6 +45,16 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib")
 # directory.  Windows is unaffected (it searches the exe's directory first).
 set(CMAKE_BUILD_RPATH_USE_ORIGIN ON)
 if(MSVC)
+    # CMake's default C++ flags carry /EHsc, whose 'c' means "assume functions
+    # declared extern "C" never throw".  ggml's whole API is extern "C", and its
+    # Vulkan backend throws vk::SystemError from behind it (createInstance:
+    # ErrorIncompatibleDriver on a machine with the loader but no working ICD).
+    # With /EHsc the compiler therefore deleted our try/catch around
+    # ggml_backend_vk_init outright, and the exception sailed past init_backend()
+    # to main() -- the engine died instead of falling back to CPU, which is what
+    # every GPU-less Windows box would have hit.  /EHs keeps synchronous C++
+    # unwinding without the "extern C cannot throw" assumption.
+    string(REPLACE "/EHsc" "/EHs" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     foreach(_cfg IN ITEMS Debug Release RelWithDebInfo MinSizeRel)
         string(TOUPPER "${_cfg}" _CFG)
         set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${_CFG} "${CMAKE_BINARY_DIR}/bin")
