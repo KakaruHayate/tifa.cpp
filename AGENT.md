@@ -122,3 +122,27 @@ order), `spans` **exactly equal**.
   `--backend`), `TIFA_GGML_THREADS=N` sets the CPU thread count.
 - Measured on an RTX 2070, one 8.7 s clip: CPU F32 ≈ 5.7 s, CPU F16 ≈ 2.9 s,
   Vulkan F16 ≈ 0.19 s.
+
+## 10. Session-2026-10-01 invariants（新增，勿踩）
+
+- **深度卷积 direct 门控必须设置**：`Model::load` 里按后端名调用
+  `ops::set_direct_dwconv(...)`（CPU/Vulkan/CUDA/Metal → true）。忘了它 =
+  CgMLP 走 im2col，CPU 慢 4.4×（2.96 s → 0.67 s/8.7 s clip）。新加模型加载
+  路径时照抄 `model_tifa.cpp` 的闸门。
+- **ggml 图输入不能放进 gallocr 竞技场**：解码器每次重传的 `in_h` 曾在
+  arena 里与 `out_logits` 同偏移，第二步读到被覆盖的状态。输入张量（图外
+  反复 `ggml_backend_tensor_set` 的那些）一律用独立 context + buffer
+  （见 `lstm_g2p.cpp::GraphRun::allocate_inputs`）；breath 的 taps 同理
+  需要 `ggml_cpy` 复制（AGENT.md §3）。
+- **mid-graph 调试读回先 cpy**：直接读中间节点是活内存，结果随机
+  （tifa 词正确、test 词乱码的那类诡异现象即此）。
+- **PFML 是文本入口的一部分**：`build_text_request` 先 `looks_like_pfml`
+  再分流；`<word phonemes=...>` 直出音素，不经词典/预处理器（注意：普通
+  文本会先 lowercase，直接音素不要放普通文本里）。
+- **发布包布局**：`models/{tifa.gguf, dictionaries/, cpp_pinyin/, assets/LstmG2p-Eng.gguf}`。
+  GGUF 里 `@dictionaries/...`、`@assets/...` 相对模型目录解析，平铺即失效。
+- **UI 层**：Electron 顶层脚本里不要 `const bridge = window.bridge`
+  （contextBridge 属性不可配置，重复声明直接 SyntaxError）；渲染层 API 挂在
+  `window.TifaLabel` 供 e2e 驱动（脚本级 const 对 executeJavaScript 不可见）。
+- **LSTM 算子**：`GGML_OP_LSTM`（`cmake/patches/ggml-lstm-op.md`）CPU-only，
+  GPU 后端 decline 后调度器自动放回 CPU；新增后端 kernel 前不要改调度假设。
