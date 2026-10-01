@@ -69,19 +69,19 @@ jobs:
         run: |
           for TAG in "${{ github.ref_type == 'tag' && github.ref_name || 'edge' }}" edge; do
             url="https://github.com/${{ github.repository }}/releases/download/$TAG/breathLab_models_dml.zip"
-            if curl -fsSL -o breathlab.zip "$url"; then
+            if curl -fsSL -o breathLab_models_dml.zip "$url"; then
               echo "breathLab_models_dml.zip <- $TAG"
               break
             fi
-            rm -f breathlab.zip
+            rm -f breathLab_models_dml.zip
           done
-          test -s breathlab.zip && unzip -q -o breathlab.zip -d breathlab_src
+          test -s breathLab_models_dml.zip && unzip -q -o breathLab_models_dml.zip -d breathlab_src
 
       - name: Keep the BreathLab source zip for the release
         uses: actions/upload-artifact@v4
         with:
           name: breathlab-source
-          path: breathlab.zip
+          path: breathLab_models_dml.zip
           if-no-files-found: ignore
           retention-days: 7
 
