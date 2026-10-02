@@ -188,6 +188,91 @@ int main() {
               "looks_like_pfml: a bare group is detected");
     }
 
+    // 12. PFML 1.0: comments are ignored, and must not split a text run --
+    //     otherwise "重<!-- x -->庆" would become two words instead of one.
+    {
+        const std::vector<Word> words = convert_pfml(
+            pipeline,
+            "<!-- lead --><word text=\"x\" language=\"zh\" script=\"s\" phonemes=\"p\"/>", {});
+        check(words.size() == 1, "comment: ignored before a word");
+        check(words[0].text == "x", "comment: word still parsed");
+
+        const std::vector<Word> two = convert_pfml(
+            pipeline,
+            "<word text=\"重\" language=\"zh\" script=\"zhong\" phonemes=\"zh ong\"/>"
+            "<!-- between -->"
+            "<word text=\"庆\" language=\"zh\" script=\"qing\" phonemes=\"q ing\"/>", {});
+        check(two.size() == 2, "comment: two words around a comment");
+        check(two[0].text == "重" && two[1].text == "庆", "comment: both words kept");
+    }
+
+    // 13. PFML 1.0: CDATA is ordinary character data, taken literally (no
+    //     entity decoding inside it).
+    {
+        const std::vector<Word> words = convert_pfml(
+            pipeline,
+            "<word language=\"zh\" script=\"s\" phonemes=\"p\"><![CDATA[重]]></word>", {});
+        check(words.size() == 1 && words[0].text == "重", "cdata: used as the word text");
+
+        const std::vector<Word> literal = convert_pfml(
+            pipeline,
+            "<word language=\"zh\" script=\"s\" phonemes=\"p\"><![CDATA[a&amp;b]]></word>", {});
+        check(literal.size() == 1 && literal[0].text == "a&amp;b",
+              "cdata: entities inside are literal");
+    }
+
+    // 14. an unknown attribute is an error, not something to ignore
+    {
+        const auto throws = [&](const std::string & src) {
+            try { convert_pfml(pipeline, src, {}); }
+            catch (const tifa_ggml::InvalidArgument &) { return true; }
+            return false;
+        };
+        check(throws("<word text=\"x\" language=\"zh\" bogus=\"1\" script=\"s\" phonemes=\"p\"/>"),
+              "attributes: unknown attribute on <word> throws");
+        check(throws("<word text=\"x\" language=\"zh\" script=\"s\" phonemes=\"p\"/>"
+                     "<group script=\"g\" phonemes=\"a\" bogus=\"1\"/>"),
+              "attributes: unknown attribute on <group> throws");
+        check(!throws("<word text=\"x\" language=\"zh\" script=\"s\" phonemes=\"p\"/>"),
+              "attributes: the documented set is still accepted");
+    }
+
+    // 15. language-kind: only "any" is defined, it needs an absent language
+    //     attribute, and it describes a direct pronunciation only.
+    {
+        const auto throws = [&](const std::string & src) {
+            try { convert_pfml(pipeline, src, {}); }
+            catch (const tifa_ggml::InvalidArgument &) { return true; }
+            return false;
+        };
+        check(throws("<word text=\"x\" language-kind=\"bogus\" script=\"s\" phonemes=\"p\"/>"),
+              "language-kind: an unknown value throws");
+        check(throws("<word text=\"x\" language=\"zh\" language-kind=\"any\""
+                     " script=\"s\" phonemes=\"p\"/>"),
+              "language-kind: combined with a language attribute throws");
+        check(!throws("<word text=\"x\" language-kind=\"any\" script=\"s\" phonemes=\"p\"/>"),
+              "language-kind: \"any\" on a direct word is accepted");
+        check(throws("<word language-kind=\"any\">plain</word>"),
+              "language-kind: on a G2P word throws");
+    }
+
+    // 16. PFML 1.0 separates an omitted language (inherit) from an explicit
+    //     empty one (clear).  Both must parse; the empty form is what lets a
+    //     nested scope drop the inherited language.
+    {
+        const std::vector<Word> cleared = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><scope language=\"\">"
+            "<word text=\"x\" script=\"s\" phonemes=\"p\"/></scope></scope>", {});
+        check(cleared.size() == 1 && cleared[0].text == "x",
+              "language: an explicit empty scope language parses");
+        const std::vector<Word> omitted = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><word text=\"x\" script=\"s\" phonemes=\"p\"/></scope>", {});
+        check(omitted.size() == 1 && omitted[0].text == "x",
+              "language: an omitted language still parses");
+    }
+
     std::cout << (failures == 0 ? "\nALL PASS\n" : "\nFAILURES\n");
     return failures == 0 ? 0 : 1;
 }

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -119,6 +120,10 @@ struct Node {
     bool has_phonemes = false;           // a `phonemes` attribute was present
     bool has_text_attr = false;          // a `text` attribute was present
     bool has_script_attr = false;        // a `script` attribute was present
+    // PFML 1.0 distinguishes an omitted attribute from an explicit empty one:
+    // `language=""` clears the inherited language rather than inheriting it.
+    bool has_language_attr = false;      // a `language` attribute was present
+    bool any_language = false;           // language-kind="any" was given
     std::vector<Node> children;
 };
 
@@ -206,8 +211,49 @@ private:
 
         // re-parse the attributes (open_tag_name left us right after the name)
         const std::vector<Attr> attrs = attributes();
+
+        // PFML 1.0 allows a fixed attribute set per element and calls anything
+        // else an error (g2pflow's pfml.py `_attributes`); silently ignoring a
+        // typo'd attribute is how a pronunciation gets quietly dropped.
+        static const std::set<std::string> kScopeAttrs   = { "language" };
+        static const std::set<std::string> kWordAttrs    = { "text", "language", "language-kind",
+                                                             "script", "phonemes" };
+        static const std::set<std::string> kGroupAttrs   = { "script", "phonemes" };
+        static const std::set<std::string> kPhonemeAttrs = { "language", "symbol" };
+        static const std::set<std::string> kNone;
+        const std::set<std::string> * allowed = &kNone;
+        switch (node.kind) {
+            case Node::Kind::Scope:   allowed = &kScopeAttrs;   break;
+            case Node::Kind::Word:    allowed = &kWordAttrs;    break;
+            case Node::Kind::Group:   allowed = &kGroupAttrs;   break;
+            case Node::Kind::Phoneme: allowed = &kPhonemeAttrs; break;
+            default: break;   // <reading>/<path> take no attributes
+        }
         for (const Attr & a : attrs) {
-            if (a.name == "language")      node.language = a.value;
+            if (!allowed->count(a.name)) {
+                parse_error("unknown attribute '" + a.name + "' on <" + name + ">", offset);
+            }
+        }
+
+        for (const Attr & a : attrs) {
+            if (a.name == "language") {
+                node.language = a.value;
+                node.has_language_attr = true;
+            }
+            else if (a.name == "language-kind") {
+                // The only value PFML 1.0 defines.  Our data model has no
+                // separate ANY tag -- an empty language already means "any" --
+                // so this is validated here and then behaves like an empty
+                // language.  The "requires a direct pronunciation result" rule
+                // is checked where the word is built.
+                if (a.value != "any") {
+                    parse_error("language-kind must be \"any\"", offset);
+                }
+                if (node.has_language_attr) {
+                    parse_error("language-kind=\"any\" requires an absent language attribute", offset);
+                }
+                node.any_language = true;
+            }
             else if (a.name == "script") { node.script = a.value; node.has_script_attr = true; }
             else if (a.name == "symbol")   node.symbol = a.value;
             else if (a.name == "text")   { node.text = a.value; node.has_text_attr = true; }
@@ -215,9 +261,6 @@ private:
                 node.phonemes = split_ascii_whitespace(a.value);
                 node.has_phonemes = true;
             }
-            // `language-kind` is accepted and ignored: this model has no
-            // separate "ANY" tag, an empty language already means any.
-            // unknown attributes are ignored (forward compatibility)
         }
         const bool self_closing = [&] {
             if (s_[i_] == '/') {
@@ -258,6 +301,30 @@ private:
         };
         while (i_ < s_.size()) {
             if (s_[i_] == '<') {
+                // PFML 1.0: comments are ignored, CDATA is ordinary character
+                // data.  Neither flushes the pending text run -- a comment
+                // between two words must not split the plain-text run, and
+                // "重<!-- x -->庆" is one word, not two.
+                if (starts_with("<!--")) {
+                    const std::size_t end = s_.find("-->", i_ + 4);
+                    if (end == std::string::npos) parse_error("unterminated comment", i_);
+                    i_ = end + 3;
+                    continue;
+                }
+                if (starts_with("<![CDATA[")) {
+                    const std::size_t end = s_.find("]]>", i_ + 9);
+                    if (end == std::string::npos) {
+                        parse_error("unterminated CDATA section", i_);
+                    }
+                    // CDATA is literal, so escape the ampersands before it
+                    // joins the buffer that decode_entities() will run over.
+                    for (std::size_t k = i_ + 9; k < end; ++k) {
+                        if (s_[k] == '&') text += "&amp;";
+                        else              text.push_back(s_[k]);
+                    }
+                    i_ = end + 3;
+                    continue;
+                }
                 if (starts_with("</")) {
                     const std::size_t close_at = i_;
                     i_ += 2;
@@ -292,10 +359,14 @@ private:
     }
 };
 
-std::vector<std::string> languages_of(const std::string & language,
+// Effective languages for a scope's children.  PFML 1.0 separates an omitted
+// `language` (inherit) from an explicit `language=""` (clear), so `present`
+// decides whether an empty value inherits or clears.
+std::vector<std::string> languages_of(const std::string & language, bool present,
                                       const std::vector<std::string> & fallback) {
     const std::vector<std::string> tags = split_language_tags(language);
-    return tags.empty() ? fallback : tags;
+    if (!tags.empty()) return tags;
+    return present ? std::vector<std::string>() : fallback;
 }
 
 std::string join_with_spaces(const std::vector<std::string> & parts) {
@@ -451,7 +522,8 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
             case Node::Kind::Scope: {
                 flush_pending();
                 convert_children(pipeline, node.children,
-                                 languages_of(node.language, languages), out);
+                                 languages_of(node.language, node.has_language_attr, languages),
+                                 out);
                 break;
             }
             case Node::Kind::Word: {
@@ -464,6 +536,11 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                 bool has_pronunciation = node.has_phonemes;
                 for (const Node & child : node.children) {
                     if (child.kind != Node::Kind::Text) { has_pronunciation = true; break; }
+                }
+                // language-kind="any" only describes a direct pronunciation; on
+                // a word that goes through G2P it would be meaningless.
+                if (node.any_language && !has_pronunciation) {
+                    parse_error("language-kind requires a direct pronunciation result", 0);
                 }
 
                 if (has_pronunciation) {
@@ -494,7 +571,7 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                 }
                 if (inner.empty()) break;   // <word language="zh"></word>
                 std::vector<Word> words = pipeline.convert(
-                    inner, languages_of(node.language, languages));
+                    inner, languages_of(node.language, node.has_language_attr, languages));
                 out.insert(out.end(), std::make_move_iterator(words.begin()),
                            std::make_move_iterator(words.end()));
                 break;
