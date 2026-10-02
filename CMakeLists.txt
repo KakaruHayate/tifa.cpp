@@ -9,6 +9,9 @@ project(tifa_ggml
 # -----------------------------------------------------------------------------
 option(TIFA_GGML_CUDA        "Enable ggml CUDA backend"     OFF)
 option(TIFA_GGML_VULKAN      "Enable ggml Vulkan backend"   OFF)
+# OFF builds only tifa_ggml_g2p (G2P + PFML, no ggml): the library downstream
+# editors link against, and the way to build/test the G2P on its own.
+option(TIFA_GGML_BUILD_MODEL "Build the aligner model backend (needs ggml)" ON)
 option(TIFA_GGML_BUILD_CLI   "Build tifa_ggml_cli executable"   ON)
 option(TIFA_GGML_BUILD_TESTS "Build unit tests (requires GoogleTest via FetchContent)" OFF)
 # Optional: use ggml-llamafile's tuned sgemm kernels for CPU mul_mat
@@ -73,9 +76,66 @@ else()
 endif()
 
 # -----------------------------------------------------------------------------
-# Dependencies (ggml via FetchContent, plus optional Metal patch)
+# Dependencies (ggml via FetchContent, plus optional Metal patch).
+# Skipped entirely for a G2P-only build (TIFA_GGML_BUILD_MODEL=OFF), which
+# needs no ggml at all.
 # -----------------------------------------------------------------------------
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Dependencies.cmake)
+if(TIFA_GGML_BUILD_MODEL)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Dependencies.cmake)
+endif()
+
+# -----------------------------------------------------------------------------
+# G2P / PFML library: tifa_ggml_g2p
+# -----------------------------------------------------------------------------
+# The grapheme-to-phoneme pipeline plus the PFML parser/serializer, with no
+# ggml dependency.  Downstream editors (MaxLabel) link this one: it needs no
+# model, no backend and no GGUF.
+#
+# The English OOV LSTM converter is the single ggml-dependent piece, so it is
+# compiled out here (TIFA_G2P_NO_LSTM).  When TIFA_GGML_BUILD_MODEL is ON the
+# full tifa_ggml library carries its own copy of these sources *with* the LSTM,
+# so link exactly one of the two — they define the same symbols.
+set(TIFA_GGML_G2P_SOURCES
+    src/json.cpp
+    src/g2p/pipeline.cpp
+    src/g2p/encoding.cpp
+    src/g2p/pinyin_engine.cpp
+    src/g2p/pfml.cpp
+    src/g2p/select.cpp
+    src/g2p/public_api.cpp
+)
+
+add_library(tifa_ggml_g2p STATIC ${TIFA_GGML_G2P_SOURCES})
+add_library(tifa_ggml::g2p ALIAS tifa_ggml_g2p)
+
+target_include_directories(tifa_ggml_g2p
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_compile_options(tifa_ggml_g2p PRIVATE ${TIFA_GGML_WARN_FLAGS})
+target_compile_definitions(tifa_ggml_g2p PUBLIC TIFA_G2P_NO_LSTM=1)
+
+# GGML-free self-tests.  These run in both configurations: TIFA_GGML_BUILD_TESTS
+# only controls the gtest suite, which needs the model backend.
+option(TIFA_GGML_BUILD_G2P_TESTS "Build the ggml-free G2P/PFML self-tests" ON)
+if(TIFA_GGML_BUILD_G2P_TESTS)
+    enable_testing()
+
+    add_executable(tifa_ggml_pfml_roundtrip tests/pfml_roundtrip_standalone.cpp)
+    target_link_libraries(tifa_ggml_pfml_roundtrip PRIVATE tifa_ggml::g2p)
+    # Exercises the internal parser/serializer directly, so it needs src/.
+    target_include_directories(tifa_ggml_pfml_roundtrip
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    add_test(NAME pfml_roundtrip COMMAND tifa_ggml_pfml_roundtrip)
+
+    add_executable(tifa_ggml_g2p_api tests/g2p_public_api_standalone.cpp)
+    target_link_libraries(tifa_ggml_g2p_api PRIVATE tifa_ggml::g2p)
+    add_test(NAME g2p_public_api COMMAND tifa_ggml_g2p_api)
+endif()
+
+if(TIFA_GGML_BUILD_MODEL)
 
 # -----------------------------------------------------------------------------
 # Core library: tifa_ggml
@@ -104,6 +164,7 @@ set(TIFA_GGML_CORE_SOURCES
     src/g2p/select.cpp
     src/g2p/lstm_g2p.cpp
     src/g2p/pfml.cpp
+    src/g2p/public_api.cpp
     src/breath/breath_mel.cpp
     src/breath/breath_net.cpp
     src/breath/breath.cpp
@@ -185,6 +246,8 @@ if(TIFA_GGML_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+endif()  # TIFA_GGML_BUILD_MODEL
+
 # -----------------------------------------------------------------------------
 # Install (minimal; mainly so consumers can embed via add_subdirectory)
 # -----------------------------------------------------------------------------
@@ -192,14 +255,23 @@ install(DIRECTORY include/tifa_ggml
         DESTINATION include
         FILES_MATCHING PATTERN "*.h")
 
-install(TARGETS tifa_ggml
+install(TARGETS tifa_ggml_g2p
         EXPORT tifa_ggml-targets
         ARCHIVE DESTINATION lib
         LIBRARY DESTINATION lib
         RUNTIME DESTINATION bin)
 
+if(TIFA_GGML_BUILD_MODEL)
+    install(TARGETS tifa_ggml
+            EXPORT tifa_ggml-targets
+            ARCHIVE DESTINATION lib
+            LIBRARY DESTINATION lib
+            RUNTIME DESTINATION bin)
+endif()
+
 message(STATUS "")
 message(STATUS "tifa_ggml ${PROJECT_VERSION} configuration:")
+message(STATUS "  Build model ........ ${TIFA_GGML_BUILD_MODEL}")
 message(STATUS "  Metal .............. ${TIFA_GGML_METAL}")
 message(STATUS "  CUDA ............... ${TIFA_GGML_CUDA}")
 message(STATUS "  Vulkan ............. ${TIFA_GGML_VULKAN}")
