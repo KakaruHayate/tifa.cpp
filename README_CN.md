@@ -64,9 +64,27 @@ cmake --build build -j
 ```
 
 构建选项：`TIFA_GGML_VULKAN`、`TIFA_GGML_CUDA`、`TIFA_GGML_METAL`、
-`TIFA_GGML_BUILD_CLI`、`TIFA_GGML_BUILD_TESTS`。CI 覆盖 8 个平台×后端组合
-（Linux/Windows/macOS × CPU/Vulkan/CUDA/Metal），Release 按平台产出全精度
-（F16）与最小（Q4_0）两档 CLI 包，另附 Windows 图形工具包。
+`TIFA_GGML_BUILD_CLI`、`TIFA_GGML_BUILD_TESTS`、`TIFA_GGML_BUILD_MODEL`
+（关掉则只构建 G2P/PFML 库，见下）。CI 覆盖 8 个平台×后端组合
+（Linux/Windows/macOS × CPU/Vulkan/CUDA/Metal）；Release 每个平台产出 GUI 包
+（自包含）+ 全精度（F16）与最小（Q4_0）两档 CLI 包。
+
+## G2P / PFML 库（供下游工具使用）
+
+G2P 与 PFML 可以脱离 ggml 单独构建、单独链接——做标注编辑器这类"对齐器之前"
+的工具时不需要模型、后端或 GGUF：
+
+```cmake
+set(TIFA_GGML_BUILD_MODEL OFF)          # 只要 tifa_ggml_g2p，不拉 ggml
+add_subdirectory(tifa.cpp)
+target_link_libraries(your_editor PRIVATE tifa_ggml::g2p)
+```
+
+接口在 [`include/tifa_ggml/g2p.h`](include/tifa_ggml/g2p.h)：文本/PFML 转词
+（`convert` / `convert_pfml`）、读回 PFML（`to_pfml`，带 round-trip 保证）、
+纯语法校验（`validate_pfml`，不需要模型）、候选读音（`candidates`）与音素
+校验（`resolve_phoneme`）。英文 OOV 的 LSTM 转换器依赖 ggml，在该配置下会被
+编译掉，英文生词回退到词典。
 
 ## 模型
 

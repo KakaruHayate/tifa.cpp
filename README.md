@@ -72,7 +72,27 @@ cmake --build build -j
 ```
 
 Options: `TIFA_GGML_VULKAN`, `TIFA_GGML_CUDA`, `TIFA_GGML_METAL`,
-`TIFA_GGML_BUILD_CLI`, `TIFA_GGML_BUILD_TESTS`.
+`TIFA_GGML_BUILD_CLI`, `TIFA_GGML_BUILD_TESTS`, `TIFA_GGML_BUILD_MODEL`
+(off builds only the G2P/PFML library, see below).
+
+## G2P / PFML library (for downstream tools)
+
+G2P and PFML build and link without ggml, so a tool that sits *before* the
+aligner — an annotation editor — needs no model, backend or GGUF:
+
+```cmake
+set(TIFA_GGML_BUILD_MODEL OFF)          # only tifa_ggml_g2p, no ggml fetched
+add_subdirectory(tifa.cpp)
+target_link_libraries(your_editor PRIVATE tifa_ggml::g2p)
+```
+
+The interface is [`include/tifa_ggml/g2p.h`](include/tifa_ggml/g2p.h): text/PFML
+to words (`convert` / `convert_pfml`), words back to PFML (`to_pfml`, with a
+round-trip guarantee), syntax-only validation (`validate_pfml`, no model
+needed), pronunciation candidates (`candidates`) and phoneme checking
+(`resolve_phoneme`).  The English OOV LSTM converter needs ggml, so it is
+compiled out in that configuration and English OOV words fall back to the
+dictionary.
 
 ## Model
 

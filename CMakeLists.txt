@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 project(tifa_ggml
-    VERSION 0.1.1
+    VERSION 0.1.2
     DESCRIPTION "TIFA (Token-Imputing Forced Aligner) native ggml inference backend"
     LANGUAGES C CXX)
 
