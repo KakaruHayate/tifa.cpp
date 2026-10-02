@@ -25,6 +25,7 @@ static bool same_words(const std::vector<Word> & a, const std::vector<Word> & b)
     if (a.size() != b.size()) return false;
     for (std::size_t i = 0; i < a.size(); ++i) {
         if (a[i].text != b[i].text || a[i].language != b[i].language) return false;
+        if (a[i].language_is_any != b[i].language_is_any) return false;
         if (a[i].readings.size() != b[i].readings.size()) return false;
         for (std::size_t r = 0; r < a[i].readings.size(); ++r) {
             const std::vector<Path> & pa = a[i].readings[r].paths;
@@ -271,6 +272,82 @@ int main() {
             "<scope language=\"zh\"><word text=\"x\" script=\"s\" phonemes=\"p\"/></scope>", {});
         check(omitted.size() == 1 && omitted[0].text == "x",
               "language: an omitted language still parses");
+    }
+
+    // 17. a word with no `language` attribute inherits the enclosing scope
+    //     (PFML 1.0 `_language(element, inherited)`), and the caller's list is
+    //     the outermost scope.
+    {
+        const std::vector<Word> in_scope = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><word text=\"x\" script=\"s\" phonemes=\"p\"/></scope>", {});
+        check(in_scope.size() == 1 && in_scope[0].language == "zh",
+              "inherit: word takes the scope language");
+        check(!in_scope[0].language_is_any, "inherit: and is not ANY");
+
+        const std::vector<Word> nested = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><scope language=\"ja\">"
+            "<word text=\"x\" script=\"s\" phonemes=\"p\"/></scope></scope>", {});
+        check(nested.size() == 1 && nested[0].language == "ja",
+              "inherit: the nearest scope wins");
+
+        const std::vector<Word> from_caller =
+            convert_pfml(pipeline, "<word text=\"x\" script=\"s\" phonemes=\"p\"/>", {"yue"});
+        check(from_caller.size() == 1 && from_caller[0].language == "yue",
+              "inherit: the caller's language list is the outer scope");
+
+        const std::vector<Word> own = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><word text=\"x\" language=\"ja\""
+            " script=\"s\" phonemes=\"p\"/></scope>", {});
+        check(own.size() == 1 && own[0].language == "ja",
+              "inherit: an explicit word language overrides the scope");
+    }
+
+    // 18. `language=""` clears rather than inherits -- the case that would
+    //     silently change meaning if the two were conflated.
+    {
+        const std::vector<Word> cleared = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><word text=\"x\" language=\"\""
+            " script=\"s\" phonemes=\"p\"/></scope>", {});
+        check(cleared.size() == 1 && cleared[0].language.empty(),
+              "clear: language=\"\" drops the inherited language");
+        check(!cleared[0].language_is_any, "clear: cleared is not ANY");
+
+        const std::vector<Word> text_cleared = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><scope language=\"\">"
+            "<word text=\"x\" script=\"s\" phonemes=\"p\"/></scope></scope>", {});
+        check(text_cleared.size() == 1 && text_cleared[0].language.empty(),
+              "clear: a cleared scope clears its children too");
+    }
+
+    // 19. language-kind="any" is the third state: distinct from both a tag and
+    //     "no language", and it survives a round trip as language-kind.
+    {
+        const std::vector<Word> words = convert_pfml(
+            pipeline,
+            "<word text=\"x\" language-kind=\"any\" script=\"s\" phonemes=\"p\"/>", {});
+        check(words.size() == 1 && words[0].language_is_any, "any: the flag is set");
+        check(words[0].language.empty(), "any: and carries no tag");
+
+        const std::string back = to_pfml(words);
+        check(back.find("language-kind=\"any\"") != std::string::npos,
+              "any: serialized as language-kind");
+        check(back.find("language=") == std::string::npos,
+              "any: no language attribute is written");
+        check(same_words(words, convert_pfml(pipeline, back, {})), "any: round-trip");
+
+        // ANY does not inherit, unlike an omitted attribute.
+        const std::vector<Word> in_scope = convert_pfml(
+            pipeline,
+            "<scope language=\"zh\"><word text=\"x\" language-kind=\"any\""
+            " script=\"s\" phonemes=\"p\"/></scope>", {});
+        check(in_scope.size() == 1 && in_scope[0].language_is_any
+                  && in_scope[0].language.empty(),
+              "any: does not inherit the scope language");
     }
 
     std::cout << (failures == 0 ? "\nALL PASS\n" : "\nFAILURES\n");

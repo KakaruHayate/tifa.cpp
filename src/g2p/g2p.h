@@ -19,6 +19,11 @@
 
 namespace tifa_ggml::internal::g2p {
 
+// "zh, zho cmn" -> {"zh", "zho", "cmn"}.  A language value may name several
+// languages (the CLI's `-l` list, and a PFML `language` attribute); both the
+// PFML resolver and encode_paths split it the same way.
+std::vector<std::string> split_language_tags(const std::string & text);
+
 // ---------------------------------------------------------------------------
 // Data model (mirrors g2p/converters/base.py)
 // ---------------------------------------------------------------------------
@@ -36,7 +41,13 @@ struct Reading {
 
 struct Word {
     std::string         text;
-    std::string         language;        // resolved language tag ("" = any)
+    // PFML 1.0 keeps three states apart, and so must this: an empty `language`
+    // is "no language" (either none was ever in scope, or `language=""` cleared
+    // it), while `language_is_any` is the distinct ANY value written as
+    // `language-kind="any"`.  An omitted attribute is not a state of its own --
+    // it resolves to whatever the enclosing scope had.
+    std::string         language;        // resolved tag; "" = none
+    bool                language_is_any = false;   // language-kind="any"
     std::vector<Reading> readings;
 };
 

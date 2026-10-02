@@ -20,8 +20,9 @@ namespace ig2p = internal::g2p;
 
 G2PWord to_public(const ig2p::Word & word) {
     G2PWord out;
-    out.text     = word.text;
-    out.language = word.language;
+    out.text            = word.text;
+    out.language        = word.language;
+    out.language_is_any = word.language_is_any;
     out.readings.reserve(word.readings.size());
     for (const ig2p::Reading & reading : word.readings) {
         G2PReading converted;
@@ -44,8 +45,9 @@ G2PWord to_public(const ig2p::Word & word) {
 
 ig2p::Word to_internal(const G2PWord & word) {
     ig2p::Word out;
-    out.text     = word.text;
-    out.language = word.language;
+    out.text            = word.text;
+    out.language        = word.language;
+    out.language_is_any = word.language_is_any;
     out.readings.reserve(word.readings.size());
     for (const G2PReading & reading : word.readings) {
         ig2p::Reading converted;
@@ -144,7 +146,8 @@ std::vector<G2PWordCandidates> candidates(const G2PPipeline & pipeline,
     for (const G2PWord & word : pipeline.convert(text, languages)) {
         G2PWordCandidates entry;
         entry.text     = word.text;
-        entry.language = word.language;
+        entry.language        = word.language;
+        entry.language_is_any = word.language_is_any;
         for (std::size_t r = 0; r < word.readings.size(); ++r) {
             const std::vector<G2PPath> & paths = word.readings[r].paths;
             for (std::size_t p = 0; p < paths.size(); ++p) {

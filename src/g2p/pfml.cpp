@@ -19,6 +19,27 @@
 
 namespace tifa_ggml::internal::g2p {
 
+// "zh, zho cmn" -> {"zh", "zho", "cmn"} (first tag wins for routing).
+// Declared in g2p.h because encode_paths splits a word's language the same way
+// -- a word may name several languages, and narrowing it to one here would
+// silently restrict phoneme resolution.
+std::vector<std::string> split_language_tags(const std::string & text) {
+    std::vector<std::string> tags;
+    std::string cur;
+    for (const char c : text) {
+        // ',' separates tags; anything at or below ' ' counts as whitespace,
+        // which avoids naming every control character here.
+        const bool separator = c == ',' || static_cast<unsigned char>(c) <= ' ';
+        if (separator) {
+            if (!cur.empty()) { tags.push_back(cur); cur.clear(); }
+            continue;
+        }
+        cur.push_back(c);
+    }
+    if (!cur.empty()) tags.push_back(cur);
+    return tags;
+}
+
 namespace {
 
 bool is_space(char c) {
@@ -44,20 +65,6 @@ std::vector<std::string> split_ascii_whitespace(const std::string & s) {
     return out;
 }
 
-// "zh, zho cmn" -> {"zh", "zho", "cmn"} (first tag wins for routing)
-std::vector<std::string> split_language_tags(const std::string & text) {
-    std::vector<std::string> tags;
-    std::string cur;
-    for (const char c : text) {
-        if (c == ',' || is_space(c)) {
-            if (!cur.empty()) { tags.push_back(cur); cur.clear(); }
-            continue;
-        }
-        cur.push_back(c);
-    }
-    if (!cur.empty()) tags.push_back(cur);
-    return tags;
-}
 
 std::string decode_entities(const std::string & s) {
     std::string out;
@@ -369,6 +376,35 @@ std::vector<std::string> languages_of(const std::string & language, bool present
     return present ? std::vector<std::string>() : fallback;
 }
 
+std::string first_language_tag(const std::string & language) {
+    const std::vector<std::string> tags = split_language_tags(language);
+    return tags.empty() ? std::string() : tags.front();
+}
+
+// The language a word reports, which PFML 1.0 resolves against the enclosing
+// scope (g2pflow's `_language(element, inherited)`).  Three states, kept apart:
+// ANY, no language, or a value.
+//
+// The value is kept exactly as written, not narrowed to its first tag: a
+// tifa.cpp extension lets an element list several languages (`language="zh,yue"`,
+// the CLI's `-l` list), and `encode_paths` splits it again when resolving
+// phonemes.  Narrowing here would silently restrict resolution to one language.
+struct ResolvedLanguage {
+    std::string tag;                  // "" = no language
+    bool        is_any = false;       // language-kind="any"
+};
+
+ResolvedLanguage resolve_language(const Node & node, const ResolvedLanguage & inherited) {
+    if (node.any_language) return ResolvedLanguage{ std::string(), true };
+    if (!node.has_language_attr) return inherited;   // omitted -> inherit
+    // An explicit `language=""` is the "no language" state, not an inheritance.
+    // A multi-language attribute keeps resolving through its first tag, exactly
+    // as it did before inheritance existed; only an *inherited* value carries
+    // the whole list, which is what keeps a multi-language scope resolving
+    // against all of its languages.
+    return ResolvedLanguage{ first_language_tag(node.language), false };
+}
+
 std::string join_with_spaces(const std::vector<std::string> & parts) {
     std::string out;
     for (std::size_t i = 0; i < parts.size(); ++i) {
@@ -376,11 +412,6 @@ std::string join_with_spaces(const std::vector<std::string> & parts) {
         out += parts[i];
     }
     return out;
-}
-
-std::string first_language_tag(const std::string & language) {
-    const std::vector<std::string> tags = split_language_tags(language);
-    return tags.empty() ? std::string() : tags.front();
 }
 
 std::string text_children(const Node & node) {
@@ -479,12 +510,13 @@ std::string phonemes_as_text(const std::vector<Reading> & readings) {
 // text to the phonemes, script to the text (the pre-existing behaviour for
 // this form) — so an explicit empty value survives a round trip.
 Word compact_word(const std::string & text, bool has_text,
-                  const std::string & language,
+                  const ResolvedLanguage & language,
                   const std::string & script, bool has_script,
                   std::vector<std::string> phonemes) {
     Word word;
     word.text = has_text ? text : join_with_spaces(phonemes);
-    word.language = first_language_tag(language);
+    word.language        = language.tag;
+    word.language_is_any = language.is_any;
     Group group;
     group.script   = has_script ? script : word.text;
     group.phonemes = std::move(phonemes);
@@ -492,8 +524,18 @@ Word compact_word(const std::string & text, bool has_text,
     return word;
 }
 
+// A word built by the G2P path reports the same resolved language as a direct
+// one; the pipeline only decides *which* converters may run (the allow-list).
+void stamp_language(std::vector<Word> & words, const ResolvedLanguage & language) {
+    for (Word & word : words) {
+        word.language        = language.tag;
+        word.language_is_any = language.is_any;
+    }
+}
+
 void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes,
                       const std::vector<std::string> & languages,
+                      const ResolvedLanguage & inherited,
                       std::vector<Word> & out) {
     // Consecutive pronunciation elements with no <word> around them group into
     // one word (the containers are optional at the fragment level too).
@@ -502,8 +544,10 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
     const auto flush_pending = [&] {
         if (pending.empty()) return;
         Word word;
-        word.readings = readings_of(pending);
-        word.text     = phonemes_as_text(word.readings);
+        word.readings        = readings_of(pending);
+        word.text            = phonemes_as_text(word.readings);
+        word.language        = inherited.tag;
+        word.language_is_any = inherited.is_any;
         out.push_back(std::move(word));
         pending.clear();
     };
@@ -515,15 +559,19 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                 if (trim(run).empty()) continue;   // inter-tag whitespace
                 flush_pending();
                 std::vector<Word> words = pipeline.convert(run, languages);
+                stamp_language(words, inherited);
                 out.insert(out.end(), std::make_move_iterator(words.begin()),
                            std::make_move_iterator(words.end()));
                 break;
             }
             case Node::Kind::Scope: {
                 flush_pending();
+                // The scope both narrows the converter allow-list and becomes
+                // the language its children inherit.
+                const ResolvedLanguage scope_language = resolve_language(node, inherited);
                 convert_children(pipeline, node.children,
                                  languages_of(node.language, node.has_language_attr, languages),
-                                 out);
+                                 scope_language, out);
                 break;
             }
             case Node::Kind::Word: {
@@ -544,6 +592,7 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                 }
 
                 if (has_pronunciation) {
+                    const ResolvedLanguage language = resolve_language(node, inherited);
                     if (node.has_phonemes) {
                         std::vector<std::string> phonemes = node.phonemes;
                         for (const Node & child : node.children) {
@@ -555,13 +604,14 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                         // attribute or the character data; only a word with
                         // neither falls back to its phonemes.
                         const bool has_text = node.has_text_attr || !inner.empty();
-                        out.push_back(compact_word(inner, has_text, node.language,
+                        out.push_back(compact_word(inner, has_text, language,
                                                    node.script, node.has_script_attr,
                                                    std::move(phonemes)));
                         break;
                     }
                     Word word;
-                    word.language = first_language_tag(node.language);
+                    word.language        = language.tag;
+                    word.language_is_any = language.is_any;
                     word.readings = readings_of(node.children);
                     word.text     = (node.has_text_attr || !inner.empty())
                                         ? inner
@@ -572,6 +622,7 @@ void convert_children(const Pipeline & pipeline, const std::vector<Node> & nodes
                 if (inner.empty()) break;   // <word language="zh"></word>
                 std::vector<Word> words = pipeline.convert(
                     inner, languages_of(node.language, node.has_language_attr, languages));
+                stamp_language(words, resolve_language(node, inherited));
                 out.insert(out.end(), std::make_move_iterator(words.begin()),
                            std::make_move_iterator(words.end()));
                 break;
@@ -616,7 +667,12 @@ std::vector<Word> convert_pfml(const Pipeline & pipeline, const std::string & te
     Parser parser(text);
     const std::vector<Node> nodes = parser.parse();
     std::vector<Word> words;
-    convert_children(pipeline, nodes, languages, words);
+    // The caller's language list is the outermost scope: a word with no
+    // `language` attribute of its own inherits it (g2pflow's
+    // `parse_pfml(source, language=...)`).  Joined, not narrowed, so a
+    // multi-language list keeps resolving exactly as it did before.
+    const ResolvedLanguage initial{ join_with_spaces(languages), false };
+    convert_children(pipeline, nodes, languages, initial, words);
     return words;
 }
 
@@ -649,9 +705,16 @@ std::string to_pfml(const std::vector<Word> & words) {
     for (const Word & word : words) {
         out += "<word text=\"";
         append_escaped(out, word.text);
-        out += "\" language=\"";
-        append_escaped(out, word.language);
         out += "\"";
+        if (word.language_is_any) {
+            // PFML 1.0 writes ANY as language-kind="any" and requires the
+            // language attribute to be absent.
+            out += " language-kind=\"any\"";
+        } else {
+            out += " language=\"";
+            append_escaped(out, word.language);
+            out += "\"";
+        }
 
         // A word with a single reading / path / group serializes to the
         // compact form the documentation uses:

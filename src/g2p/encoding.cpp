@@ -244,9 +244,11 @@ CandidateGrid encode_paths(const std::vector<Word> & words,
     std::vector<std::vector<BuiltCandidate>> per_word;
     per_word.reserve(words.size());
     for (const Word & word : words) {
-        // An untagged word ("any") resolves through the requested languages.
+        // A word with a language resolves within it; an untagged word ("any")
+        // resolves through the requested languages.  The value may list several
+        // languages (`language="zh,yue"`), so split it rather than use it whole.
         const std::vector<std::string> word_languages =
-            word.language.empty() ? languages : std::vector<std::string>{ word.language };
+            word.language.empty() ? languages : split_language_tags(word.language);
 
         std::vector<BuiltCandidate> candidates;
         for (std::size_t reading_index = 0; reading_index < word.readings.size(); ++reading_index) {
