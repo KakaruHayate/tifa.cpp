@@ -103,7 +103,10 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 - **词典找不到**：词典以文件形式放在模型目录旁（`models/dictionaries/`）。
   换用自己的模型目录时，把 `dictionaries/`、`cpp_pinyin/`、`assets/` 一起放过去。
 - **PFML**：文本里可以写 `<word phonemes="zh ong">重</word>`（直接给音素，
-  不经词典）或 `<scope language="ja">東京</scope>`（指定语言区间）。
+  不经词典）或 `<scope language="ja">東京</scope>`（指定语言区间）。按 PFML 1.0
+  解析：支持完整 `<reading>/<path>/<group>` 树、注释 `<!-- -->` 与 CDATA；
+  **未知元素或未知属性会报错**（写错属性名不会被静默忽略），`language=""`
+  表示清空继承的语言。
 - **Linux 打不开图形界面**：Electron 依赖一批系统库，最小安装的发行版需要先装：
   `sudo apt install libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2`
   （其他发行版对应包名类似）。命令行包不受影响。
@@ -220,7 +223,11 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
   `dictionaries/`, `cpp_pinyin/` and `assets/` along with it.
 - **PFML**: transcripts may embed final phonemes directly
   (`<word phonemes="zh ong">重</word>`) or language scopes
-  (`<scope language="ja">東京</scope>`).
+  (`<scope language="ja">東京</scope>`).  Parsing follows PFML 1.0: full
+  `<reading>`/`<path>`/`<group>` trees, comments `<!-- -->` and CDATA are
+  accepted, **unknown elements and unknown attributes are errors** (a typo'd
+  attribute is not silently ignored), and `language=""` clears the inherited
+  language.
 - **The GUI will not start on Linux**: Electron needs a few system libraries;
   on a minimal install add
   `sudo apt install libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2`
