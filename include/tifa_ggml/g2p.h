@@ -34,7 +34,14 @@ struct G2PReading {
 
 struct G2PWord {
     std::string                 text;
-    std::string                 language;   // resolved tag ("" = any)
+    // PFML 1.0 has three language states and this keeps them apart:
+    //   language_is_any == true   -> Language.ANY (`language-kind="any"`)
+    //   language.empty()          -> no language (`language=""`, or none in scope)
+    //   otherwise                 -> the resolved tag
+    // An omitted `language` attribute is not a fourth state: it inherits the
+    // enclosing scope, so it lands in one of the three above.
+    std::string                 language;
+    bool                        language_is_any = false;
     std::vector<G2PReading>     readings;
 };
 
@@ -108,7 +115,8 @@ struct G2PCandidate {
 
 struct G2PWordCandidates {
     std::string               text;
-    std::string               language;
+    std::string               language;      // "" = none; see G2PWord
+    bool                      language_is_any = false;
     std::vector<G2PCandidate> candidates;
 };
 
