@@ -44,6 +44,11 @@ USAGE.md                  本文件
 4. 输出为 `<名称>.TextGrid` 和 `<名称>.diagnosis.json`（诊断信息，默认导出），
    落在输出目录。
 
+> **每一层都是首尾相接的。** 没有任何音素/词覆盖的时段（解码器的 gap 状态）
+> 会写成 `text = ""` 的空区间——这等价于上游 TIFA 经由 Python `textgrid` 包的
+> `_fillInTheGaps` 写出来的结果。Praat 两种都能读，但 vLabeler 的 TextGrid
+> 标注器声明了 `continuous`，有空隙的 TextGrid 会直接建不了工程。
+
 > **诊断 JSON 默认导出**，这是新流程里的重要工具：里面的 `agreement`、
 > `confidence`、`determinacy`、`monotonicity` 可以按文件排序，**只需要人工校对
 > 最差的那 10%**，其余直接过。
@@ -158,6 +163,12 @@ Q4_0 ones.
    3. **Pipeline** — first-pass align → (optional) BreathLab breath AP/SP merged
       into the phones tier → (optional) 2PASS re-align.  Press start.
 4. Output per file: `<name>.TextGrid` and `<name>.diagnosis.json` (default).
+
+> **Every tier is written continuously.**  A stretch that no phone or word
+> claims — the decoder's gap states — becomes an interval with an empty label,
+> which is what upstream TIFA gets from the Python `textgrid` package's
+> `_fillInTheGaps`.  Praat reads both, but vLabeler's TextGrid labeler is
+> declared `continuous` and refuses a TextGrid that has holes.
 
 > **The diagnosis JSON is exported by default** — it is what makes the workflow
 > scale: sort the files by its `agreement`, `confidence`, `determinacy` and

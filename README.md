@@ -33,6 +33,12 @@ predicts phone-level time boundaries and writes a three-tier Praat TextGrid
 (`texts` / `words` / `phones`), plus optional self-check metrics that flag
 alignments worth a human look.
 
+Each tier is written continuously: a stretch that no phone or word claims — the
+decoder's gap states — becomes an interval with an empty label.  This mirrors
+the Python `textgrid` package's `_fillInTheGaps`, which upstream TIFA serialises
+through, and it is what strict consumers such as vLabeler's `continuous`
+TextGrid labeler require.
+
 ```
 audio ──► log-mel (48 kHz, hop 480, 80 bins)
       ──► JEBF backbone (8 layers, dim 256, joint attention, RoPE, qk-norm)

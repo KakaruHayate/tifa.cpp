@@ -46,6 +46,25 @@ TEST(TextGrid, FormatsThreeTiersInOrder) {
     EXPECT_NE(text.find("text = \"h\""), std::string::npos);
 }
 
+// The decoder's gap states leave frames unclaimed, so a tier can legitimately
+// arrive with holes; upstream serialises through the Python `textgrid` package,
+// whose writer closes them with empty intervals.  Ours must do the same.
+TEST(TextGrid, FillsUncoveredStretchesWithEmptyIntervals) {
+    std::vector<TextGridTier> tiers = {
+        { "phones", {{0.5, 1.0, "h"}, {1.5, 2.0, "e"}} },
+    };
+    const std::string text = format_textgrid(tiers, 2.5);
+    // 2 phones + 3 holes (leading, between, trailing)
+    EXPECT_NE(text.find("intervals: size = 5"), std::string::npos);
+    const std::string tab = "\t\t\t\t";
+    EXPECT_NE(text.find(tab + "xmin = 0\n" + tab + "xmax = 0.5\n" + tab + "text = \"\""),
+              std::string::npos);
+    EXPECT_NE(text.find(tab + "xmin = 1\n" + tab + "xmax = 1.5\n" + tab + "text = \"\""),
+              std::string::npos);
+    EXPECT_NE(text.find(tab + "xmin = 2\n" + tab + "xmax = 2.5\n" + tab + "text = \"\""),
+              std::string::npos);
+}
+
 TEST(TextGrid, EscapesEmbeddedQuotes) {
     std::vector<TextGridTier> tiers = { { "phones", {{0.0, 1.0, "a\"b"}} } };
     const std::string text = format_textgrid(tiers, 1.0);

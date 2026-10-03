@@ -58,6 +58,29 @@ std::string quote_text(const std::string & text) {
     return out;
 }
 
+// Port of the Python `textgrid` package's `IntervalTier._fillInTheGaps(null)`,
+// which upstream TIFA gets for free because it serialises through that library.
+// The decoder's gap states (`G_i` in modules/decoding.py) are frames no token
+// claims, so the spans -- and therefore the tiers -- legitimately contain
+// holes; Praat's IntervalTier format, however, is meant to run continuously.
+// Upstream turns every uncovered stretch into an empty-labelled interval and
+// documents it ("Unlabeled gaps ... are filled with \"\"", README).  Emitting
+// the holes verbatim instead produces TextGrids that Praat tolerates but that
+// strict consumers (vLabeler's `continuous: true` labeler) reject.
+std::vector<TextGridInterval> fill_tier_gaps(
+        const std::vector<TextGridInterval> & intervals, double xmax) {
+    std::vector<TextGridInterval> out;
+    out.reserve(intervals.size() + 4);
+    double prev = 0.0;
+    for (const auto & iv : intervals) {
+        if (prev < iv.xmin - 1e-9) out.push_back({prev, iv.xmin, ""});
+        out.push_back(iv);
+        if (iv.xmax > prev) prev = iv.xmax;
+    }
+    if (prev < xmax - 1e-9) out.push_back({prev, xmax, ""});
+    return out;
+}
+
 }  // namespace
 
 std::string format_textgrid(const std::vector<TextGridTier> & tiers, double xmax) {
@@ -77,9 +100,10 @@ std::string format_textgrid(const std::vector<TextGridTier> & tiers, double xmax
         os << "\t\tname = " << quote_text(tier.name) << "\n";
         os << "\t\txmin = 0\n";
         os << "\t\txmax = " << fmt_double(xmax) << "\n";
-        os << "\t\tintervals: size = " << tier.intervals.size() << "\n";
-        for (std::size_t ii = 0; ii < tier.intervals.size(); ++ii) {
-            const auto & iv = tier.intervals[ii];
+        const std::vector<TextGridInterval> intervals = fill_tier_gaps(tier.intervals, xmax);
+        os << "\t\tintervals: size = " << intervals.size() << "\n";
+        for (std::size_t ii = 0; ii < intervals.size(); ++ii) {
+            const auto & iv = intervals[ii];
             os << "\t\t\tintervals [" << (ii + 1) << "]:\n";
             os << "\t\t\t\txmin = " << fmt_double(iv.xmin) << "\n";
             os << "\t\t\t\txmax = " << fmt_double(iv.xmax) << "\n";
