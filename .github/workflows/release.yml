@@ -243,11 +243,10 @@ jobs:
             tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
             tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -l zh -o out2
 
-          models/breath-fbl-*.gguf is the FoxBreatheLabeler AP detector and the
-          recommended one (`breathe ... -m models/breath-fbl-q4_0.gguf`); it
-          matches this bundle's precision.
+          models/$FBL is the FoxBreatheLabeler AP detector and the default one
+          (`breathe ... -m models/$FBL --merge out -o out`).
 
-          The breathe/2PASS steps also accept the BreathLab breath model (by Xiantaidu,
+          BreathLab is the alternative (by Xiantaidu,
           https://github.com/Xiantaidu); when this bundle has no
           models/breath-*.gguf, convert it from the BreathLab source zip that
           is published next to this archive:
@@ -423,9 +422,11 @@ jobs:
              macOS: open "TIFA Label.app", right-click > Open the first time).
           2. The engine and models sit beside the app and are imported
              automatically - no setup.  Aligner: models/tifa-1.0-st-q4_0.gguf,
-             breath: models/breath-v5-24k-f16.gguf (a BreathLab model by
-             Xiantaidu, https://github.com/Xiantaidu; if it is missing, convert
-             it from the source zip published beside this archive with
+             breath: models/breath-fbl-q4_0.gguf (the default FoxBreatheLabeler
+             detector when present). BreathLab is the alternative:
+             models/breath-v5-24k-f16.gguf (a BreathLab model by Xiantaidu,
+             https://github.com/Xiantaidu; if it is missing, convert it from
+             the source zip published beside this archive with
              scripts/convert_breath_to_gguf.py).
           3. Import audio files or a folder, choose the annotation source
              (text/G2P or existing phones), enable the breath/2PASS stages,

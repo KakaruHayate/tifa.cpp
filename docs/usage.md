@@ -16,7 +16,8 @@ tifa_ggml_cli(.exe)       对齐引擎（GUI 自动使用）
 ggml*                     引擎依赖（.dll / .so / .dylib）
 models/
   tifa-1.0-st-q4_0.gguf   对齐模型（Q4_0）
-  breath-v5-24k-f16.gguf  呼吸检测模型（BreathLab；可选阶段用）
+  breath-fbl-q4_0.gguf    呼吸/AP 检测模型（FoxBreatheLabeler，**默认**）
+  breath-v5-24k-f16.gguf  呼吸检测模型（BreathLab，备选）
   dictionaries/           发音词典（中文/粤语/日语/英语）
   cpp_pinyin/             汉语拼音引擎词典
   assets/LstmG2p-Eng.gguf 英文 OOV 推理模型
@@ -138,7 +139,8 @@ tifa_ggml_cli(.exe)       the aligner engine (used by the GUI automatically)
 ggml*                     engine dependencies (.dll / .so / .dylib)
 models/
   tifa-1.0-st-q4_0.gguf   aligner weights (Q4_0)
-  breath-v5-24k-f16.gguf  BreathLab breath/AP detector (optional stages)
+  breath-fbl-q4_0.gguf    breath/AP detector (FoxBreatheLabeler, the **default**)
+  breath-v5-24k-f16.gguf  BreathLab breath/AP detector (the alternative)
   dictionaries/           pronunciation dictionaries (zh/yue/ja/en)
   cpp_pinyin/             Mandarin pinyin engine tables
   assets/LstmG2p-Eng.gguf English OOV inference model

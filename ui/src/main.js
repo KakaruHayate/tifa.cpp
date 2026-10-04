@@ -294,10 +294,12 @@ function registerIpc() {
       const ggufs = names.filter(n => /\.gguf$/i.test(n)).map(n => path.join(dir, n));
       if (!ggufs.length) continue;
       // FBL is the default detector; BreathLab is the alternative, so a
-      // bundle carrying both must not pick by directory order.
+      // bundle carrying both must not pick by directory order -- and *every*
+      // detector has to be kept out of the aligner pick, not just the chosen one.
+      const isDetector = p => /fbl|breath|ap[_-]?det/i.test(path.basename(p));
       const breath = ggufs.find(p => /fbl/i.test(path.basename(p)))
-                  || ggufs.find(p => /breath|ap[_-]?det/i.test(path.basename(p))) || null;
-      const aligner = ggufs.find(p => p !== breath) || null;
+                  || ggufs.find(isDetector) || null;
+      const aligner = ggufs.find(p => !isDetector(p)) || null;
       if (aligner || breath) return { ok: true, dir, aligner, breath };
     }
     return { ok: false, error: 'no models/*.gguf beside the app' };
