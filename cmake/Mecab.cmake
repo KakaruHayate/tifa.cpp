@@ -38,26 +38,33 @@ FetchContent_Declare(
     URL_HASH SHA256=7ad44f987ae0b7fd345c72a4b67e14dbe0f4bd1669d247a8aaeb0f15218a3fd1
 )
 
-FetchContent_GetProperties(mecab)
-if(NOT mecab_POPULATED)
-    FetchContent_Populate(mecab)
-endif()
-
-# Self-heal a stale fetch: a tree patched by an OLDER mecab-portability.patch
-# makes the current patch fail both the forward and the reverse check (the
-# restored CI cache does exactly this after a patch update).  Detect the half
-# patched state -- MECAB_STATIC_LIB present (some patch applied) while darts.h
-# still carries `register` (not the current patch) -- and re-fetch.
-if(mecab_SOURCE_DIR)
-    file(STRINGS "${mecab_SOURCE_DIR}/mecab/src/mecab.h" _mecab_old_patch
+# Self-heal a stale fetch BEFORE the first Populate: a tree patched by an
+# OLDER mecab-portability.patch makes the current patch fail both the forward
+# and the reverse check (the restored CI cache does exactly this after a patch
+# update).  Detect the half patched state -- MECAB_STATIC_LIB present (some
+# patch applied) while darts.h still carries `register` (not the current
+# patch) -- and remove the tree with its stamps so the populate below
+# re-downloads it.  The source dir is checked by its deterministic path
+# because FetchContent_Populate may only ever run once per configure.
+set(_mecab_src_dir "${CMAKE_BINARY_DIR}/_deps/mecab-src")
+set(_mecab_subbuild "${CMAKE_BINARY_DIR}/_deps/mecab-subbuild")
+if(EXISTS "${_mecab_src_dir}/mecab/src/mecab.h"
+   AND EXISTS "${_mecab_src_dir}/mecab/src/darts.h")
+    file(STRINGS "${_mecab_src_dir}/mecab/src/mecab.h" _mecab_old_patch
          REGEX "MECAB_STATIC_LIB")
-    file(STRINGS "${mecab_SOURCE_DIR}/mecab/src/darts.h" _mecab_register
+    file(STRINGS "${_mecab_src_dir}/mecab/src/darts.h" _mecab_register
          REGEX "register ")
     if(NOT _mecab_old_patch STREQUAL "" AND NOT _mecab_register STREQUAL "")
         message(STATUS "MeCab source tree carries an outdated patch; re-fetching")
-        file(REMOVE_RECURSE "${mecab_SOURCE_DIR}" "${mecab_BINARY_DIR}")
-        FetchContent_Populate(mecab)
+        file(REMOVE_RECURSE "${_mecab_src_dir}" "${_mecab_subbuild}")
     endif()
+endif()
+unset(_mecab_old_patch)
+unset(_mecab_register)
+
+FetchContent_GetProperties(mecab)
+if(NOT mecab_POPULATED)
+    FetchContent_Populate(mecab)
 endif()
 
 # Patches live OUTSIDE the populate guard (same reasoning as ggml above: a
