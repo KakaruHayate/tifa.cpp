@@ -65,6 +65,8 @@ Breathe options:
                               -> align --textgrid)
       --phones-tier NAME      tier to merge into       (default: phones)
       --min-insert-ms MS      shortest AP/SP inserted (default: 50)
+      --fill-gaps LABEL       label for stretches no phone covers
+                              (default: SP; empty leaves them unlabelled)
   -q, --quiet                 only report errors
 
 Align options:
@@ -86,6 +88,8 @@ Align options:
       --skip-penalty F        raw cosine cost per skipped phone (default: 0.5)
       --output-formats LIST   textgrid,json           (default: textgrid,json)
       --backend NAME          auto | cpu | vulkan | cuda | metal
+      --fill-gaps LABEL       label for stretches no token covers
+                              (default: SP; empty leaves them unlabelled)
       --max-frames N          refuse inputs longer than N mel frames
   -q, --quiet                 only report errors
 )");
@@ -151,6 +155,10 @@ struct AlignOptions {
     std::string oov_handling = "discard";
     float       skip_penalty = 0.5f;
     long        max_frames = 6000;
+    // Label for stretches no token covers.  A Praat tier has to run
+    // continuously, and the dataset convention labels silence "SP" so no
+    // stretch is left unlabelled; pass an empty value to keep them empty.
+    std::string fill_gaps = "SP";
     bool        quiet = false;
 };
 
@@ -362,6 +370,106 @@ AlignTokenRequest build_text_request(const Model & model,
     return req;
 }
 
+// Same reader, but a missing tier is not an error: the 2PASS carries optional
+// tiers (texts/words) through and has to cope with TextGrids that lack them.
+std::vector<tifa_cli::TimedInterval> read_interval_tier(const std::string & path,
+                                                        const std::string & tier_name);
+
+std::vector<tifa_cli::TimedInterval> read_interval_tier_opt(const std::string & path,
+                                                    const std::string & tier_name,
+                                                    bool & found) {
+    try {
+        std::vector<tifa_cli::TimedInterval> v = read_interval_tier(path, tier_name);
+        found = true;
+        return v;
+    } catch (const std::exception &) {
+        found = false;
+        return {};
+    }
+}
+
+// The grouping behind the texts/words tiers, re-attached to a fresh alignment.
+//
+// The second pass reads only the phones tier, so without this the phrase line
+// is lost: nothing in a re-alignment can invent it back.  We read it from the
+// first-pass TextGrid and map each token to the text/word that contained it,
+// which is exactly what build_alignment_tiers() aggregates by -- so the tiers
+// come out with the *new* phone boundaries but the original text.
+struct InheritedGrouping {
+    std::vector<std::int32_t> words;          // per token, 1-based text id
+    std::vector<std::int32_t> groups;         // per token, 1-based word id
+    std::vector<std::string>  word_texts;
+    std::vector<std::string>  group_scripts;
+    bool ok = false;
+};
+
+InheritedGrouping inherit_grouping(const std::string & tg_path,
+                                   const std::string & phones_tier,
+                                   const std::vector<std::string> & phones,
+                                   const std::vector<std::string> & stop_symbols,
+                                   std::size_t n_tokens) {
+    InheritedGrouping out;
+    bool have_texts = false, have_words = false;
+    const auto texts_raw = read_interval_tier_opt(tg_path, "texts", have_texts);
+    const auto words_raw = read_interval_tier_opt(tg_path, "words", have_words);
+    if (!have_texts || !have_words || texts_raw.empty() || words_raw.empty()) return out;
+
+    // The writer pads every tier with empty intervals so it runs continuously;
+    // those are not words, and an owner pointing at one would lose the label.
+    const auto keep_labelled = [](const std::vector<tifa_cli::TimedInterval> & v) {
+        std::vector<tifa_cli::TimedInterval> out;
+        for (const auto & iv : v) {
+            if (!iv.text.empty()) out.push_back(iv);
+        }
+        return out;
+    };
+    const std::vector<tifa_cli::TimedInterval> texts = keep_labelled(texts_raw);
+    const std::vector<tifa_cli::TimedInterval> words = keep_labelled(words_raw);
+    if (texts.empty() || words.empty()) return out;
+
+    bool have_phones = false;
+    const auto raw = read_interval_tier_opt(tg_path, phones_tier, have_phones);
+    if (!have_phones) return out;
+
+    // index of the interval containing `t`, else the last one starting before it
+    const auto owner_of = [](const std::vector<tifa_cli::TimedInterval> & v, double t) {
+        std::int32_t best = 1;
+        for (std::size_t i = 0; i < v.size(); ++i) {
+            if (t >= v[i].xmin - 1e-9 && t <= v[i].xmax + 1e-9) {
+                return static_cast<std::int32_t>(i) + 1;
+            }
+            if (v[i].xmin <= t) best = static_cast<std::int32_t>(i) + 1;
+        }
+        return best;
+    };
+
+    // walk the non-empty phones (read_textgrid_tier skips empty labels, so the
+    // phone list and the raw intervals have to be filtered the same way)
+    std::size_t k = 0;
+    for (const auto & iv : raw) {
+        if (iv.text.empty()) continue;
+        if (k >= phones.size()) break;
+        const double mid = 0.5 * (iv.xmin + iv.xmax);
+        const std::int32_t w = owner_of(texts, mid);
+        const std::int32_t g = owner_of(words, mid);
+        const bool stop = std::find(stop_symbols.begin(), stop_symbols.end(),
+                                    phones[k]) != stop_symbols.end();
+        if (!stop) {
+            out.words.push_back(w);
+            out.groups.push_back(g);
+        }
+        ++k;
+    }
+    if (out.words.size() != n_tokens) return out;   // shapes disagree: don't guess
+
+    out.word_texts.reserve(texts.size());
+    for (const auto & t : texts) out.word_texts.push_back(t.text);
+    out.group_scripts.reserve(words.size());
+    for (const auto & w : words) out.group_scripts.push_back(w.text);
+    out.ok = true;
+    return out;
+}
+
 int cmd_align(const std::string & input, const AlignOptions & opt) {
     if (opt.model.empty()) throw InvalidArgument("--model is required");
     const fs::path in_path(input);
@@ -470,6 +578,23 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
                 req.skip_penalty = opt.skip_penalty;
                 result = model.align(audio_buf.samples.data(), audio_buf.samples.size(),
                                      audio_buf.sample_rate, req);
+
+                // 2PASS: re-attach the phrase line.  The alignment above only
+                // saw phones, so texts/words would come out empty; the first
+                // pass's grouping is still in the TextGrid we just read.
+                if (!opt.textgrid.empty() && !result.spans.empty()) {
+                    fs::path tg = opt.textgrid;
+                    if (fs::is_directory(tg)) tg /= (identifier + ".TextGrid");
+                    const InheritedGrouping inh = inherit_grouping(
+                        tg.string(), opt.phones_tier, seq.phones,
+                        model.config().stop_symbols, result.spans.size());
+                    if (inh.ok) {
+                        result.words         = inh.words;
+                        result.groups        = inh.groups;
+                        result.word_texts    = inh.word_texts;
+                        result.group_scripts = inh.group_scripts;
+                    }
+                }
             }
 
             if (!opt.dump_dir.empty()) {
@@ -501,6 +626,10 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
                 if (!opt.quiet) std::fprintf(stderr, "[skip] %s (zero-width spans)\n", identifier.c_str());
                 continue;
             }
+            // The phones tier is last; every stretch the alignment does not
+            // cover gets the fill label (SP by default) so the annotation has
+            // no unlabelled holes.
+            if (!tiers.empty()) tiers.back().gap_label = opt.fill_gaps;
             if (want_textgrid) {
                 write_textgrid_file((out_dir / (identifier + ".TextGrid")).string(), tiers, xmax);
             }
@@ -540,6 +669,8 @@ struct BreatheOptions {
     std::string merge;              // alignment TextGrid file or directory
     std::string phones_tier = "phones";
     double      min_insert_ms = 50.0;
+    // Label for stretches the merged phones tier does not cover (see align).
+    std::string fill_gaps = "SP";
     bool        quiet = false;
 };
 
@@ -619,6 +750,7 @@ std::vector<tifa_cli::TimedInterval> read_interval_tier(const std::string & path
     }
     return intervals;
 }
+
 
 int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
     if (opt.model.empty()) throw InvalidArgument("--model is required");
@@ -705,6 +837,7 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
                                                  &inserted);
                     TextGridTier merged_tier;
                     merged_tier.name = opt.phones_tier;
+                    merged_tier.gap_label = opt.fill_gaps;
                     merged_tier.intervals.reserve(merged.size());
                     for (const tifa_cli::TimedInterval & interval : merged) {
                         TextGridInterval out;
@@ -713,9 +846,27 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
                         out.text = interval.text;
                         merged_tier.intervals.push_back(std::move(out));
                     }
+                    // Carry texts/words through: the second pass re-reads this
+                    // file to rebuild the phrase line, and dropping them here is
+                    // what used to lose it.
+                    std::vector<TextGridTier> out_tiers;
+                    for (const char * name : { "texts", "words" }) {
+                        bool found = false;
+                        const auto kept = read_interval_tier_opt(alignment.string(), name, found);
+                        if (!found) continue;
+                        TextGridTier tier;
+                        tier.name = name;
+                        tier.intervals.reserve(kept.size());
+                        for (const tifa_cli::TimedInterval & iv : kept) {
+                            tier.intervals.push_back({iv.xmin, iv.xmax, iv.text});
+                        }
+                        out_tiers.push_back(std::move(tier));
+                    }
+                    out_tiers.push_back(std::move(merged_tier));
+                    out_tiers.push_back(std::move(breath_tier));
                     write_textgrid_file(
                         (out_dir / (identifier + ".TextGrid")).string(),
-                        { std::move(merged_tier), std::move(breath_tier) }, seconds);
+                        std::move(out_tiers), seconds);
                     if (!opt.quiet) {
                         std::fprintf(stderr, "breath: merged %zu AP/SP into %zu phones\n",
                                      inserted, phones.size());
@@ -818,6 +969,7 @@ int main(int argc, char ** argv) {
                 else if (a == "--skip-handling")                 opt.skip_handling = value();
                 else if (a == "--skip-penalty")                  opt.skip_penalty = std::stof(value());
                 else if (a == "--output-formats")                opt.output_formats = value();
+                else if (a == "--fill-gaps")                     opt.fill_gaps = value();
                 else if (a == "--backend")                       opt.backend = value();
                 else if (a == "--dump-dir")                      opt.dump_dir = value();
                 else if (a == "--text")                          opt.text = value();
@@ -848,6 +1000,7 @@ int main(int argc, char ** argv) {
                 else if (a == "--merge")                   opt.merge = value();
                 else if (a == "--phones-tier")             opt.phones_tier = value();
                 else if (a == "--min-insert-ms")           opt.min_insert_ms = std::strtod(value().c_str(), nullptr);
+                else if (a == "--fill-gaps")               opt.fill_gaps = value();
                 else if (a == "-q" || a == "--quiet")      opt.quiet = true;
                 else throw InvalidArgument("unknown option: " + a);
             }

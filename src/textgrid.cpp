@@ -68,16 +68,17 @@ std::string quote_text(const std::string & text) {
 // the holes verbatim instead produces TextGrids that Praat tolerates but that
 // strict consumers (vLabeler's `continuous: true` labeler) reject.
 std::vector<TextGridInterval> fill_tier_gaps(
-        const std::vector<TextGridInterval> & intervals, double xmax) {
+        const std::vector<TextGridInterval> & intervals, double xmax,
+        const std::string & gap_label) {
     std::vector<TextGridInterval> out;
     out.reserve(intervals.size() + 4);
     double prev = 0.0;
     for (const auto & iv : intervals) {
-        if (prev < iv.xmin - 1e-9) out.push_back({prev, iv.xmin, ""});
+        if (prev < iv.xmin - 1e-9) out.push_back({prev, iv.xmin, gap_label});
         out.push_back(iv);
         if (iv.xmax > prev) prev = iv.xmax;
     }
-    if (prev < xmax - 1e-9) out.push_back({prev, xmax, ""});
+    if (prev < xmax - 1e-9) out.push_back({prev, xmax, gap_label});
     return out;
 }
 
@@ -100,7 +101,8 @@ std::string format_textgrid(const std::vector<TextGridTier> & tiers, double xmax
         os << "\t\tname = " << quote_text(tier.name) << "\n";
         os << "\t\txmin = 0\n";
         os << "\t\txmax = " << fmt_double(xmax) << "\n";
-        const std::vector<TextGridInterval> intervals = fill_tier_gaps(tier.intervals, xmax);
+        const std::vector<TextGridInterval> intervals =
+            fill_tier_gaps(tier.intervals, xmax, tier.gap_label);
         os << "\t\tintervals: size = " << intervals.size() << "\n";
         for (std::size_t ii = 0; ii < intervals.size(); ++ii) {
             const auto & iv = intervals[ii];

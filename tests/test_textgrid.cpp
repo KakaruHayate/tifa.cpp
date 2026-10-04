@@ -112,3 +112,26 @@ TEST(TextGrid, ClampsMonotoneAndMatchesWordLabel) {
     EXPECT_LE(phones[0].xmax, phones[1].xmin + 1e-9);
     EXPECT_EQ(tiers[0].intervals[0].text, "ni hao");
 }
+
+// A tier has to run continuously, and the label used for the stretches no
+// interval covers is per-tier: upstream's textgrid package writes an empty
+// label, while a dataset annotation wants "SP" so nothing is left unlabelled.
+TEST(TextGrid, GapLabelIsPerTierAndDefaultsToEmpty) {
+    std::vector<TextGridTier> tiers(2);
+    tiers[0].name = "phones";
+    tiers[0].gap_label = "SP";
+    tiers[0].intervals = {{1.0, 2.0, "a"}, {3.0, 4.0, "b"}};
+    tiers[1].name = "texts";
+    tiers[1].intervals = {{1.0, 2.0, "hi"}};      // gap_label left empty
+
+    const std::string out = format_textgrid(tiers, 5.0);
+    // phones: gap before, between, and after -> three "SP" intervals
+    std::size_t sp = 0, pos = 0;
+    while ((pos = out.find("text = \"SP\"", pos)) != std::string::npos) { ++sp; pos += 4; }
+    EXPECT_EQ(sp, 3u);
+    // texts: the uncovered stretches stay unlabelled
+    std::size_t empty = 0;
+    pos = 0;
+    while ((pos = out.find("text = \"\"", pos)) != std::string::npos) { ++empty; pos += 4; }
+    EXPECT_EQ(empty, 2u);
+}

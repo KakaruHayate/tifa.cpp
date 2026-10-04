@@ -22,6 +22,11 @@ struct TextGridInterval {
 struct TextGridTier {
     std::string                  name;
     std::vector<TextGridInterval> intervals;
+    // Label written for stretches no interval covers.  Praat wants a tier to run
+    // continuously, so a gap always becomes an interval; empty means "unlabelled"
+    // (what upstream's textgrid package writes), while the phones tier of a
+    // dataset annotation uses "SP" so no stretch is left without a label.
+    std::string                  gap_label;
 };
 
 // Serialize a TextGrid in the "long" ooTextFile format Praat (and the Python
