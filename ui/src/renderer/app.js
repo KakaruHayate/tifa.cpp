@@ -474,11 +474,31 @@ function bind() {
   // 输入
   $('btn-add-files').onclick = async () => {
     const r = await api.pickFiles();
-    if (r.ok) await addPaths(r.paths);
+    if (r.ok) {
+      if (r.list) {
+        mergeInputs(r.list);
+        if (r.truncated) {
+          $('input-more').classList.remove('hidden');
+          $('input-more').textContent = '列表过长，仅扫描了前若干文件。';
+        }
+      } else if (r.paths) {
+        await addPaths(r.paths);
+      }
+    }
   };
   $('btn-add-folder').onclick = async () => {
     const r = await api.pickFolder();
-    if (r.ok) await addPaths(r.paths);
+    if (r.ok) {
+      if (r.list) {
+        mergeInputs(r.list);
+        if (r.truncated) {
+          $('input-more').classList.remove('hidden');
+          $('input-more').textContent = '列表过长，仅扫描了前若干文件。';
+        }
+      } else if (r.paths) {
+        await addPaths(r.paths);
+      }
+    }
   };
   $('btn-clear-inputs').onclick = () => { S.inputs = []; renderInputs(); };
 
