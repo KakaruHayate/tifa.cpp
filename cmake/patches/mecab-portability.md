@@ -15,6 +15,7 @@ silently lost the patch fails the configure instead of the build.
 | `mecab/src/common.h` | `WPATH` expands to `WPATH_FORCE` on MSVC, but `WPATH_FORCE` is only defined inside the MinGW (`__GNUC__`) branch — the upstream MSVC path cannot compile. | Hoist the `WPATH_FORCE` definition out of the MinGW branch. |
 | `mecab/src/thread.h` | The `BEGINTHREAD` cast spells `_stdcall`, which is not a keyword outside MSVC (MinGW). | `__stdcall`, accepted by both. |
 | `mecab/src/dictionary.cpp` | `pair_1st_cmp` derives from `std::binary_function`, removed in C++17. | Plain struct with a `const` `operator()`. |
+| `darts.h`, `viterbi.cpp`, `char_property.h` | The removed `register` storage class is an error-severity diagnostic on current clang in C++17 mode (neither `-w` nor our warning set can downgrade it). | Drop the keyword; it has been meaningless for decades. |
 
 ## Build defines (cmake/Mecab.cmake)
 
