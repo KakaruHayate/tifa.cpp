@@ -1,0 +1,61 @@
+diff --git a/mecab/src/common.h b/mecab/src/common.h
+index d1fc459..64aba0e 100644
+--- a/mecab/src/common.h
++++ b/mecab/src/common.h
+@@ -82,8 +82,8 @@
+ #endif
+ 
+ #ifdef _WIN32
+-#ifdef __GNUC__
+ #define WPATH_FORCE(path) (MeCab::Utf8ToWide(path).c_str())
++#ifdef __GNUC__
+ #define WPATH(path) (path)
+ #else
+ #define WPATH(path) WPATH_FORCE(path)
+diff --git a/mecab/src/dictionary.cpp b/mecab/src/dictionary.cpp
+index 0ff0b05..9778761 100644
+--- a/mecab/src/dictionary.cpp
++++ b/mecab/src/dictionary.cpp
+@@ -65,9 +65,9 @@ int progress_bar_darts(size_t current, size_t total) {
+ }
+ 
+ template <typename T1, typename T2>
+-struct pair_1st_cmp: public std::binary_function<bool, T1, T2> {
++struct pair_1st_cmp {
+   bool operator()(const std::pair<T1, T2> &x1,
+-                  const std::pair<T1, T2> &x2)  {
++                  const std::pair<T1, T2> &x2) const {
+     return x1.first < x2.first;
+   }
+ };
+diff --git a/mecab/src/mecab.h b/mecab/src/mecab.h
+index ce7f265..ee52f60 100644
+--- a/mecab/src/mecab.h
++++ b/mecab/src/mecab.h
+@@ -337,9 +337,12 @@ extern "C" {
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+-#  ifdef DLL_EXPORT
++#  if defined(DLL_EXPORT)
+ #    define MECAB_DLL_EXTERN  __declspec(dllexport)
+ #    define MECAB_DLL_CLASS_EXTERN  __declspec(dllexport)
++#  elif defined(MECAB_STATIC_LIB)
++#    define MECAB_DLL_EXTERN  extern
++#    define MECAB_DLL_CLASS_EXTERN
+ #  else
+ #    define MECAB_DLL_EXTERN  __declspec(dllimport)
+ #  endif
+diff --git a/mecab/src/thread.h b/mecab/src/thread.h
+index 7f3fa66..314ad5d 100644
+--- a/mecab/src/thread.h
++++ b/mecab/src/thread.h
+@@ -35,7 +35,7 @@
+ #define MECAB_USE_THREAD 1
+ #define BEGINTHREAD(src, stack, func, arg, flag, id)                    \
+   (HANDLE)_beginthreadex((void *)(src), (unsigned)(stack),              \
+-                         (unsigned(_stdcall *)(void *))(func), (void *)(arg), \
++                         (unsigned(__stdcall *)(void *))(func), (void *)(arg), \
+                          (unsigned)(flag), (unsigned *)(id))
+ #endif
+ 

@@ -14,6 +14,7 @@ add_executable(tifa_ggml_tests
     test_decode.cpp
     test_g2p_lstm.cpp
     test_g2p_pfml.cpp
+    test_g2p_japanese.cpp
     test_breathe_merge.cpp
     test_fbl_net.cpp
     test_textgrid.cpp

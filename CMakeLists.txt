@@ -85,6 +85,13 @@ if(TIFA_GGML_BUILD_MODEL)
 endif()
 
 # -----------------------------------------------------------------------------
+# MeCab (BSD-3) — Japanese morphological analyzer for the `japanese-mecab`
+# G2P converter.  Included unconditionally: the ggml-free G2P library carries
+# the converter too.  A no-op when TIFA_GGML_MECAB=OFF.
+# -----------------------------------------------------------------------------
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Mecab.cmake)
+
+# -----------------------------------------------------------------------------
 # G2P / PFML library: tifa_ggml_g2p
 # -----------------------------------------------------------------------------
 # The grapheme-to-phoneme pipeline plus the PFML parser/serializer, with no
@@ -104,6 +111,11 @@ set(TIFA_GGML_G2P_SOURCES
     src/g2p/select.cpp
     src/g2p/public_api.cpp
 )
+if(TIFA_GGML_MECAB)
+    list(APPEND TIFA_GGML_G2P_SOURCES src/g2p/mecab_g2p.cpp)
+else()
+    set(TIFA_G2P_NO_MECAB_DEF TIFA_G2P_NO_MECAB=1)
+endif()
 
 add_library(tifa_ggml_g2p STATIC ${TIFA_GGML_G2P_SOURCES})
 add_library(tifa_ggml::g2p ALIAS tifa_ggml_g2p)
@@ -115,7 +127,10 @@ target_include_directories(tifa_ggml_g2p
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 target_compile_options(tifa_ggml_g2p PRIVATE ${TIFA_GGML_WARN_FLAGS})
-target_compile_definitions(tifa_ggml_g2p PUBLIC TIFA_G2P_NO_LSTM=1)
+target_compile_definitions(tifa_ggml_g2p PUBLIC TIFA_G2P_NO_LSTM=1 ${TIFA_G2P_NO_MECAB_DEF})
+if(TIFA_GGML_MECAB)
+    target_link_libraries(tifa_ggml_g2p PRIVATE mecab)
+endif()
 
 # GGML-free self-tests.  These run in both configurations: TIFA_GGML_BUILD_TESTS
 # only controls the gtest suite, which needs the model backend.
@@ -170,6 +185,9 @@ set(TIFA_GGML_CORE_SOURCES
     src/breath/fbl_net.cpp
     src/breath/breath.cpp
 )
+if(TIFA_GGML_MECAB)
+    list(APPEND TIFA_GGML_CORE_SOURCES src/g2p/mecab_g2p.cpp)
+endif()
 
 add_library(tifa_ggml STATIC ${TIFA_GGML_CORE_SOURCES})
 add_library(tifa_ggml::tifa_ggml ALIAS tifa_ggml)
@@ -190,6 +208,11 @@ target_link_libraries(tifa_ggml
 )
 
 target_compile_options(tifa_ggml PRIVATE ${TIFA_GGML_WARN_FLAGS})
+if(TIFA_GGML_MECAB)
+    target_link_libraries(tifa_ggml PRIVATE mecab)
+else()
+    target_compile_definitions(tifa_ggml PUBLIC TIFA_G2P_NO_MECAB=1)
+endif()
 target_compile_definitions(tifa_ggml PUBLIC
     TIFA_GGML_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
     TIFA_GGML_VERSION_MINOR=${PROJECT_VERSION_MINOR}

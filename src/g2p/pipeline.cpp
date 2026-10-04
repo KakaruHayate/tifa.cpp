@@ -11,11 +11,13 @@
 #ifndef TIFA_G2P_NO_LSTM
 #include "lstm_g2p.h"
 #endif
+#include "mecab_g2p.h"
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -156,6 +158,20 @@ bool is_hanzi(char32_t c) {
 
 bool is_kana(char32_t c) {
     return (c >= 0x3040 && c <= 0x309F) || (c >= 0x30A0 && c <= 0x30FF);
+}
+
+// g2p/converters/japanese.py:_is_japanese_char -- the claim range of the
+// mecab converter: kana plus the kanji blocks (and 々〆〇).  In particular it
+// must never take ASCII romaji/phoneme input from the Japanese dictionary
+// converter used by existing training datasets (upstream comment).
+bool is_japanese_input(char32_t c) {
+    if (is_kana(c)) return true;
+    if (c == 0x3005 || c == 0x3006 || c == 0x3007) return true;  // 々〆〇
+    return (c >= 0x3400 && c <= 0x4DBF)
+        || (c >= 0x4E00 && c <= 0x9FFF)
+        || (c >= 0xF900 && c <= 0xFAFF)
+        || (c >= 0x20000 && c <= 0x2FA1F)
+        || (c >= 0x30000 && c <= 0x323AF);
 }
 
 bool is_small_kana(char32_t c) {
@@ -912,10 +928,37 @@ private:
     PinyinEngine             engine_;
 };
 
+// Katakana folds to hiragana for a unified lookup (both converters share it).
+std::u32string kata_to_hira(const std::u32string & text) {
+    constexpr char32_t k_katakana_start = 0x30A1;
+    constexpr char32_t k_hiragana_start = 0x3041;
+    constexpr char32_t k_span           = 0x5E;
+    std::u32string result;
+    result.reserve(text.size());
+    for (char32_t c : text) {
+        result.push_back(c >= k_katakana_start && c < k_katakana_start + k_span
+                             ? static_cast<char32_t>(c - k_katakana_start + k_hiragana_start)
+                             : c);
+    }
+    return result;
+}
+
+std::u32string utf8_to_u32(const std::string & text) {
+    std::u32string out;
+    out.reserve(text.size());
+    for (std::size_t i = 0; i < text.size();) {
+        out.push_back(decode_utf8(text, i));
+    }
+    return out;
+}
+
 // g2p/converters/japanese.py:JapaneseKanaConverter (gemination is off unless
 // the config asks for `double_written_sokuon: true`)
 class JapaneseKanaConverter : public ScriptDictionaryConverter {
 public:
+    // The mecab converter reuses the romaji table to re-join kana digraphs.
+    friend class JapaneseMecabConverter;
+
     JapaneseKanaConverter(std::vector<std::string> languages, const std::string & dict_path,
                           bool double_written_sokuon)
         : ScriptDictionaryConverter(dict_path),
@@ -970,20 +1013,6 @@ protected:
     }
 
 private:
-    static std::u32string kata_to_hira(const std::u32string & text) {
-        constexpr char32_t k_katakana_start = 0x30A1;
-        constexpr char32_t k_hiragana_start = 0x3041;
-        constexpr char32_t k_span           = 0x5E;
-        std::u32string result;
-        result.reserve(text.size());
-        for (char32_t c : text) {
-            result.push_back(c >= k_katakana_start && c < k_katakana_start + k_span
-                                 ? static_cast<char32_t>(c - k_katakana_start + k_hiragana_start)
-                                 : c);
-        }
-        return result;
-    }
-
     // Hiragana-only romaji table, derived from cpp-kana's kanaToRomajiMap.
     static const std::unordered_map<std::string, std::string> & kana_to_romaji() {
         static const std::unordered_map<std::string, std::string> table = {
@@ -1063,6 +1092,195 @@ private:
     std::vector<std::string> languages_;
     bool                     double_written_sokuon_;
 };
+
+// g2p/converters/japanese.py:JapaneseMecabConverter -- segment full Japanese
+// word forms with MeCab and enumerate whole-word readings from UniDic's
+// `pron` field (katakana).  Romaji, phoneme groups, dictionary alternatives
+// and long vowels stay in JapaneseKanaConverter, exactly as upstream: MeCab
+// supplies only the kana reading of each surface form.
+#ifndef TIFA_G2P_NO_MECAB
+class JapaneseMecabConverter : public Converter {
+public:
+    JapaneseMecabConverter(std::vector<std::string> languages,
+                           std::unique_ptr<MecabTagger> tagger,
+                           std::unique_ptr<JapaneseKanaConverter> kana,
+                           bool double_written_sokuon, int nbest)
+        : languages_(std::move(languages)),
+          tagger_(std::move(tagger)),
+          kana_(std::move(kana)),
+          double_written_sokuon_(double_written_sokuon),
+          nbest_(nbest) {}
+
+    const std::vector<std::string> & languages() const override { return languages_; }
+
+    Match find(const std::u32string & text) const override {
+        return find_run(text, is_japanese_input);
+    }
+
+    std::vector<Word> convert(const std::u32string & text) const override {
+        // Snapshot the surfaces before the N-best calls below (MeCab's lattice
+        // is reused), re-joining kana digraphs MeCab split off: a surface that
+        // starts with a small kana merges back when the two together form a
+        // kana unit with a romaji spelling (upstream does the same).
+        std::vector<std::u32string> surfaces;
+        for (const MecabTagger::Morph & morph : tagger_->segment(to_utf8(text))) {
+            const std::u32string surface = utf8_to_u32(morph.surface);
+            if (!surfaces.empty() && !surface.empty() && is_small_kana(surface[0])
+                && all_kana(surfaces.back() + surface)
+                && JapaneseKanaConverter::kana_to_romaji().count(to_utf8(kata_to_hira(
+                       std::u32string(1, surfaces.back().back()) + surface.substr(0, 1))))
+                       > 0) {
+                surfaces.back() += surface;
+            } else {
+                surfaces.push_back(surface);
+            }
+        }
+
+        // Per-surface pronunciations.  A kanji surface without any UniDic
+        // reading is a hard error upstream (G2PConversionError); kana falls
+        // through to the per-unit dictionary path.
+        struct Item {
+            std::u32string           text;
+            std::vector<std::string> pronunciations;
+        };
+        std::vector<Item> items;
+        for (const std::u32string & surface : surfaces) {
+            const std::string surface_utf8 = to_utf8(surface);
+            std::vector<std::string> prons =
+                tagger_->pronunciations(surface_utf8, nbest_);
+            if (prons.empty() && !all_kana(surface)) {
+                throw InvalidArgument(
+                    "cannot read the Japanese word '" + surface_utf8 +
+                    "': MeCab/UniDic has no pronunciation for it");
+            }
+            if (!items.empty() && double_written_sokuon_) {
+                const std::vector<std::string> previous =
+                    items.back().pronunciations.empty()
+                        ? std::vector<std::string>{ to_utf8(items.back().text) }
+                        : items.back().pronunciations;
+                const bool previous_is_sokuon =
+                    std::any_of(previous.begin(), previous.end(),
+                                [](const std::string & candidate) {
+                                    return ends_with_sokuon(candidate);
+                                });
+                if (previous_is_sokuon) {
+                    // Keep a combined sokuon dictionary key within one path
+                    // choice: the previous item absorbs this surface, its
+                    // reading candidates becoming every left+right pair
+                    // (upstream's product).
+                    const std::vector<std::string> right =
+                        prons.empty() ? std::vector<std::string>{ surface_utf8 } : prons;
+                    std::vector<std::string>        merged;
+                    std::unordered_set<std::string> seen;
+                    for (const std::string & l : previous) {
+                        for (const std::string & r : right) {
+                            if (seen.insert(l + r).second) merged.push_back(l + r);
+                        }
+                    }
+                    items.back().text += surface;
+                    items.back().pronunciations = std::move(merged);
+                    continue;
+                }
+            }
+            items.push_back(Item{ surface, std::move(prons) });
+        }
+
+        std::vector<Word> result;
+        for (const Item & item : items) {
+            if (!item.pronunciations.empty()) {
+                Word word;
+                word.text = to_utf8(item.text);
+                for (const std::string & pron : item.pronunciations) {
+                    word.readings.push_back(reading_from_kana(pron));
+                }
+                result.push_back(std::move(word));
+            } else {
+                // Pure kana without a UniDic pron: the kana converter's own
+                // per-unit dictionary alternatives (upstream `_kana._convert`).
+                std::vector<Word> words = kana_->convert(item.text);
+                result.insert(result.end(), std::make_move_iterator(words.begin()),
+                              std::make_move_iterator(words.end()));
+            }
+        }
+        return result;
+    }
+
+private:
+    static bool all_kana(const std::u32string & text) {
+        if (text.empty()) return false;
+        for (char32_t c : text) {
+            if (!is_kana(c)) return false;
+        }
+        return true;
+    }
+
+    // True when the kana reading ends in っ -- the sokuon that
+    // double_written_sokuon merges into the following syllable.  Trailing
+    // long-vowel marks and handakuten are stripped first (upstream rstrip).
+    static bool ends_with_sokuon(const std::string & kana_utf8) {
+        std::u32string hira = kata_to_hira(utf8_to_u32(kana_utf8));
+        while (!hira.empty() && (hira.back() == 0x30FC || hira.back() == 0x309C)) {
+            hira.pop_back();
+        }
+        return !hira.empty() && hira.back() == 0x3063;  // っ
+    }
+
+    // One Reading per pronunciation; per-kana dictionary alternatives combine
+    // within this reading, not across readings (upstream `_reading`): the
+    // cross product of every kana unit's alternatives forms the path set.
+    Reading reading_from_kana(const std::string & pron) const {
+        Reading out;
+        const std::vector<Word> words = kana_->convert(utf8_to_u32(pron));
+        std::vector<std::vector<Path>> alternatives;
+        alternatives.reserve(words.size());
+        for (const Word & word : words) {
+            std::vector<Path> options;
+            for (const Reading & reading : word.readings) {
+                for (const Path & path : reading.paths) options.push_back(path);
+            }
+            if (options.empty()) return out;  // product over an empty set
+            alternatives.push_back(std::move(options));
+        }
+        std::unordered_set<std::string> seen;
+        std::vector<std::size_t>        index(alternatives.size(), 0);
+        while (true) {
+            Path        path;
+            std::string key;
+            for (std::size_t i = 0; i < alternatives.size(); ++i) {
+                for (const Group & group : alternatives[i][index[i]]) {
+                    path.push_back(group);
+                    key += group.script;
+                    key.push_back('\x1D');
+                    for (const std::string & phoneme : group.phonemes) {
+                        key += phoneme;
+                        key.push_back('\x1F');
+                    }
+                    key.push_back('\x1E');
+                }
+            }
+            if (seen.insert(std::move(key)).second) out.paths.push_back(std::move(path));
+            std::size_t pos = index.size();
+            bool        carried = false;
+            while (pos > 0) {
+                --pos;
+                if (++index[pos] < alternatives[pos].size()) {
+                    carried = true;
+                    break;
+                }
+                index[pos] = 0;
+            }
+            if (!carried) break;
+        }
+        return out;
+    }
+
+    std::vector<std::string>               languages_;
+    std::unique_ptr<MecabTagger>           tagger_;
+    std::unique_ptr<JapaneseKanaConverter> kana_;
+    bool                                   double_written_sokuon_;
+    int                                    nbest_;
+};
+#endif  // TIFA_G2P_NO_MECAB
 
 // ---------------------------------------------------------------------------
 // preprocessors (g2p/preprocessors/simple.py)
@@ -1299,6 +1517,25 @@ std::string find_engine_dict_dir(const std::string & language,
     return candidates.empty() ? std::string() : candidates.front();
 }
 
+// Same conventional-location probing as above, for the MeCab/UniDic dicdir of
+// the `japanese-mecab` converter: a candidate directory must hold sys.dic.
+// The release ships the dictionary as a separate asset to extract into
+// <model dir>/unidic.
+std::string find_unidic_dir(const std::string & dict_dir,
+                            const std::string & explicit_path) {
+    std::vector<std::string> candidates;
+    if (!explicit_path.empty()) candidates.push_back(explicit_path);
+    if (!dict_dir.empty()) {
+        candidates.push_back(join_path(dict_dir, "unidic"));
+        candidates.push_back(join_path(dict_dir, "mecab/unidic"));
+        candidates.push_back(join_path(dict_dir, "dictionaries/unidic"));
+    }
+    for (const std::string & candidate : candidates) {
+        if (file_exists(join_path(candidate, "sys.dic"))) return candidate;
+    }
+    return std::string();
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -1357,6 +1594,43 @@ Pipeline Pipeline::from_config(const std::string & g2p_json, const std::string &
             const auto kwarg_path = [&](const char * key) {
                 return resolve_path_ref(kwarg(key), dict_dir);
             };
+            // The stock model's GGUF embeds the kwargs of tifa.vocab.json, whose
+            // values are strings ('nbest': '32', 'double_written_sokuon':
+            // 'False'); accept native JSON scalars as well.
+            const auto kwarg_int = [&](const char * key, int fallback) {
+                if (kwargs != nullptr) {
+                    if (const json::Value * value = kwargs->find(key)) {
+                        if (value->is_number()) return static_cast<int>(value->number);
+                        if (value->is_string()) {
+                            const std::string & text = value->str;
+                            std::size_t         at   = 0;
+                            if (at < text.size() && (text[at] == '-' || text[at] == '+')) ++at;
+                            if (at < text.size() && text.find_first_not_of("0123456789", at)
+                                                       == std::string::npos) {
+                                return std::atoi(text.c_str());
+                            }
+                        }
+                    }
+                }
+                return fallback;
+            };
+            const auto kwarg_bool = [&](const char * key, bool fallback) {
+                if (kwargs != nullptr) {
+                    if (const json::Value * value = kwargs->find(key)) {
+                        if (value->is_bool()) return value->boolean;
+                        if (value->is_string()) {
+                            std::string text;
+                            for (char c : value->str) {
+                                text.push_back(
+                                    static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c));
+                            }
+                            if (text == "true" || text == "1" || text == "yes") return true;
+                            if (text == "false" || text == "0" || text == "no") return false;
+                        }
+                    }
+                }
+                return fallback;
+            };
             const auto languages_of = [&](std::vector<std::string> defaults) {
                 const json::Value * language = config.is_object() ? config.find("language") : nullptr;
                 if (language != nullptr && language->is_string()) {
@@ -1387,32 +1661,60 @@ Pipeline Pipeline::from_config(const std::string & g2p_json, const std::string &
                 impl.converters.push_back(std::make_unique<ChineseConverter>(
                     languages_of(std::move(tags)), dict_path, engine_dir));
             } else if (id == "japanese-kana" || id == "japanese-mecab") {
-                // The stock TIFA config declares `japanese-mecab`, which needs
-                // MeCab + UniDic and cannot be carried in this build.  Kana
-                // lyrics do not need a morphological analyzer, so the kana
-                // converter serves that id too -- otherwise nothing registers a
-                // Japanese converter and `-l ja` fails on kana as well as kanji.
-                // Kanji still needs a real MeCab: it cannot be segmented here,
-                // and falls through to per-character phonemes.
-                if (id == "japanese-mecab") {
-                    warn("converter 'japanese-mecab' needs MeCab + UniDic, which this "
-                         "build cannot carry; serving kana with the kana converter. "
-                         "Kanji lyrics need a kana transcription first (or a config "
-                         "declaring 'japanese-kana' and kana input)");
-                }
+                // The stock TIFA config declares `japanese-mecab`: MeCab
+                // segments the lyrics and UniDic supplies the kana reading
+                // (`pron`), which then flows through the kana converter.  The
+                // kana converter shares this entry's dict_path and
+                // double_written_sokuon kwargs and serves the id whenever no
+                // usable UniDic dictionary is around -- otherwise nothing
+                // would register a Japanese converter at all and `-l ja`
+                // would fail on kana as well as kanji.
                 const std::string dict_path = kwarg_path("dict_path");
                 if (dict_path.empty()) {
                     throw InvalidArgument("converter '" + id + "' requires a 'dict_path' kwarg");
                 }
-                bool sokuon = false;
-                if (kwargs != nullptr) {
-                    if (const json::Value * value = kwargs->find("double_written_sokuon");
-                        value != nullptr && value->is_bool()) {
-                        sokuon = value->boolean;
+                const bool sokuon = kwarg_bool("double_written_sokuon", false);
+                const int  nbest  = kwarg_int("nbest", 32);
+
+                std::unique_ptr<MecabTagger> tagger;
+                std::string                  mecab_unavailable;
+#ifndef TIFA_G2P_NO_MECAB
+                if (id == "japanese-mecab") {
+                    const std::string unidic_dir =
+                        find_unidic_dir(dict_dir, kwarg_path("unidic_dir"));
+                    if (!unidic_dir.empty()) {
+                        try {
+                            tagger = MecabTagger::open(unidic_dir);
+                        } catch (const std::exception & e) {
+                            mecab_unavailable = std::string("the UniDic dictionary at '") +
+                                                unidic_dir + "' is unusable: " + e.what();
+                        }
+                    } else {
+                        mecab_unavailable =
+                            "no UniDic dictionary was found under '" + dict_dir + "'";
                     }
                 }
-                impl.converters.push_back(std::make_unique<JapaneseKanaConverter>(
-                    languages_of({ "ja", "jpn" }), dict_path, sokuon));
+#else
+                if (id == "japanese-mecab") {
+                    mecab_unavailable = "this build was compiled without MeCab";
+                }
+#endif
+                if (!mecab_unavailable.empty()) {
+                    warn("converter 'japanese-mecab': " + mecab_unavailable +
+                         "; serving kana with the kana converter. For kanji lyrics, "
+                         "extract the 'unidic-lite-dicdir' release asset to "
+                         "<model dir>/unidic (or set the converter's 'unidic_dir' kwarg)");
+                }
+                if (tagger != nullptr) {
+                    impl.converters.push_back(std::make_unique<JapaneseMecabConverter>(
+                        languages_of({ "ja", "jpn" }), std::move(tagger),
+                        std::make_unique<JapaneseKanaConverter>(std::vector<std::string>{},
+                                                                dict_path, sokuon),
+                        sokuon, nbest));
+                } else {
+                    impl.converters.push_back(std::make_unique<JapaneseKanaConverter>(
+                        languages_of({ "ja", "jpn" }), dict_path, sokuon));
+                }
             } else if (id == "dictionary") {
                 const std::string dict_path = kwarg_path("dict_path");
                 if (dict_path.empty()) {
