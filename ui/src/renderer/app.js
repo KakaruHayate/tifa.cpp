@@ -206,16 +206,25 @@ async function installUnidic() {
   const btn = $('btn-unidic');
   btn.disabled = true;
   setStatus('unidic-status', 'unidicDot', '日语词典：下载中 0%', 'running');
-  const r = await api.installUnidic();
-  btn.disabled = false;
-  if (r.ok) {
-    setStatus('unidic-status', 'unidicDot', '日语汉字词典已安装', 'ok');
-    btn.classList.add('hidden');
-    log('日语汉字词典安装完成：' + (r.dir || ''));
-  } else {
+  try {
+    const r = await api.installUnidic();
+    if (r.ok) {
+      setStatus('unidic-status', 'unidicDot', '日语汉字词典已安装', 'ok');
+      btn.classList.add('hidden');
+      log('日语汉字词典安装完成：' + (r.dir || ''));
+    } else {
+      setStatus('unidic-status', 'unidicDot', '日语词典安装失败', 'bad');
+      log('日语词典安装失败：' + (r.error || ''));
+      await refreshExtras();
+    }
+  } catch (err) {
+    // IPC itself rejected (handler threw before the handle() guard): report it
+    // through the same path and make sure the button comes back.
     setStatus('unidic-status', 'unidicDot', '日语词典安装失败', 'bad');
-    log('日语词典安装失败：' + (r.error || ''));
+    log('日语词典安装失败：' + ((err && err.message) || err));
     await refreshExtras();
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -502,7 +511,10 @@ function bind() {
   $('btn-inspect').onclick = runInspect;
   $('btn-model').onclick = async () => {
     const r = await api.pickModel();
-    if (r.ok) await loadModel(r.modelPath);
+    // The dictionary lives beside the model: a new model may move it between
+    // installed / installable, so refresh the extras row either way.
+    await loadModel(r.ok ? r.modelPath : undefined);
+    await refreshExtras();
   };
   $('btn-breath-model').onclick = async () => {
     const r = await api.pickBreathModel();

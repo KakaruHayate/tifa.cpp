@@ -30,7 +30,14 @@ def main() -> None:
         with zipfile.ZipFile(args.out, "w", zipfile.ZIP_DEFLATED) as zipped:
             for member in members:
                 name = member.name.rsplit("/dicdir/", 1)[1]
-                zipped.writestr(f"unidic/{name}", tar.extractfile(member).read())
+                # The input is a pinned sdist, but refuse to write anything
+                # outside unidic/ if it ever changes.
+                if not name or ".." in pathlib.PurePosixPath(name).parts:
+                    raise SystemExit(f"unsafe dicdir member name: {member.name}")
+                stream = tar.extractfile(member)
+                if stream is None:  # non-regular member
+                    continue
+                zipped.writestr(f"unidic/{name}", stream.read())
 
     size_mb = pathlib.Path(args.out).stat().st_size / 1e6
     print(f"wrote {args.out}: {len(members)} files, {size_mb:.1f} MB")

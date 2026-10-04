@@ -126,7 +126,10 @@ jobs:
         continue-on-error: true
         run: |
           pip download unidic-lite==1.0.8 --no-deps -d unidic_dl
-          python scripts/package_unidic.py             --sdist "unidic_dl/$(ls unidic_dl | grep 'unidic_lite-.*\.tar\.gz$')"             --out unidic-lite-dicdir.zip
+          for f in unidic_dl/unidic_lite-*.tar.gz; do
+            [ -f "$f" ] || { echo "unidic-lite sdist not found in unidic_dl/"; exit 1; }
+            python scripts/package_unidic.py --sdist "$f" --out unidic-lite-dicdir.zip
+          done
           ls -la unidic-lite-dicdir.zip
 
       - uses: actions/upload-artifact@v4
@@ -526,7 +529,7 @@ jobs:
 
       - name: Flatten
         run: |
-          mkdir -p out dist-src
+          mkdir -p out dist-src dist-unidic
           find dist-cli dist-gui dist-src dist-unidic -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
           ls -la out/
 

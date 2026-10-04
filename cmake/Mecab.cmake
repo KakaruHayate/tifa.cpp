@@ -96,6 +96,8 @@ if(NOT TARGET mecab)
         VERSION="0.996"
         MECAB_DEFAULT_RC="unused"          # always passed explicitly (-r)
         HAVE_GETENV
+        HAVE_STDINT_H                      # MeCab's fallback uint32_t typedef is
+                                           # wrong on LP64; every target has stdint.h
         HAVE_UNSIGNED_LONG_LONG_INT        # x64 size_t overloads in StringBuffer
         HAVE_LONG_LONG_INT
     )
@@ -107,6 +109,21 @@ if(NOT TARGET mecab)
         )
         # registry lookup in load_dictionary_resource (utils.cpp)
         target_link_libraries(mecab PRIVATE advapi32)
+    else()
+        # MeCab guards every POSIX include behind configure macros (it normally
+        # gets them from config.h); without them mmap.h fails to compile.
+        # HAVE_MMAP keeps sys.dic mapped read-only instead of read() into a
+        # ~190 MB heap buffer.
+        target_compile_definitions(mecab PRIVATE
+            HAVE_SYS_TYPES_H
+            HAVE_SYS_STAT_H
+            HAVE_FCNTL_H
+            HAVE_STRING_H
+            HAVE_SYS_MMAN_H
+            HAVE_UNISTD_H
+            HAVE_DIRENT_H
+            HAVE_MMAP
+        )
     endif()
     # Third-party code: silence warnings entirely (register in darts.h, the
     # never-returning die() destructor, ...).  Our own targets keep theirs.

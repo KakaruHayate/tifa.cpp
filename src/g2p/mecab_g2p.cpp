@@ -94,9 +94,9 @@ std::vector<std::string> MecabTagger::pronunciations(const std::string & word,
     lattice->add_request_type(MECAB_NBEST);
     lattice->set_sentence(word.c_str());
     if (!impl_->tagger->parse(lattice)) {
+        const std::string reason = lattice->what();  // before the lattice is freed
         MeCab::deleteLattice(lattice);
-        throw InvalidArgument("MeCab failed to parse '" + word + "': " +
-                              lattice->what());
+        throw InvalidArgument("MeCab failed to parse '" + word + "': " + reason);
     }
     for (int i = 0; i < nbest && lattice->next(); ++i) {
         // Upstream keeps only N-best parses where the word is one morpheme:

@@ -314,15 +314,24 @@ function registerIpc() {
   let unidicInstalling = false;
 
   function modelsBaseDir() {
+    // Mirror the CLI's dict_dir resolution (main.cpp): <model dir>/dicts when
+    // it exists, the model dir otherwise -- unidic/ must land where
+    // find_unidic_dir() probes.
     const cfg = readConfig();
-    if (cfg.modelPath) return path.dirname(cfg.modelPath);
+    const candidates = [];
+    if (cfg.modelPath) candidates.push(path.dirname(cfg.modelPath));
     const exeDir = path.dirname(app.getPath('exe'));
-    for (const dir of [
+    candidates.push(
       path.join(exeDir, 'models'),
       path.join(APP_ROOT, '..', 'models'),
       path.join(process.cwd(), 'models'),
-    ]) {
-      try { if (fs.statSync(dir).isDirectory()) return dir; } catch { /* keep looking */ }
+    );
+    for (const dir of candidates) {
+      try {
+        if (!fs.statSync(dir).isDirectory()) continue;
+        const dicts = path.join(dir, 'dicts');
+        return fs.existsSync(dicts) ? dicts : dir;
+      } catch { /* keep looking */ }
     }
     return null;
   }
@@ -350,7 +359,12 @@ function registerIpc() {
     };
     try {
       progress(0, 0);
-      const res = await fetch(UNIDIC_URL, { redirect: 'follow' });
+      // 10 minutes is generous for 49 MB; a stalled connection must not hang
+      // the row forever.
+      const res = await fetch(UNIDIC_URL, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(10 * 60 * 1000),
+      });
       if (!res.ok) throw new Error('download failed: HTTP ' + res.status);
       const total  = Number(res.headers.get('content-length') || 0);
       const chunks = [];
@@ -363,12 +377,15 @@ function registerIpc() {
         progress(received, total);
       }
       const zip = new AdmZip(Buffer.concat(chunks));
-      // Refuse anything that is not the dictionary asset.
-      const names = zip.getEntries().map((e) => e.entryName);
-      if (!names.includes('unidic/sys.dic')) {
+      // Refuse anything that is not the dictionary asset, and extract only
+      // the unidic/ subtree -- nothing else in the archive may touch disk.
+      const entries = zip.getEntries().filter((e) => e.entryName.replace(/\\/g, '/').startsWith('unidic/'));
+      if (!entries.some((e) => e.entryName.replace(/\\/g, '/') === 'unidic/sys.dic')) {
         throw new Error('downloaded archive does not contain unidic/sys.dic');
       }
-      zip.extractAllTo(base, true);
+      for (const entry of entries) {
+        zip.extractEntryTo(entry, base, /* maintainEntryPath */ true, /* overwrite */ true);
+      }
       if (!fs.existsSync(path.join(base, 'unidic', 'sys.dic'))) {
         throw new Error('extraction did not produce unidic/sys.dic');
       }

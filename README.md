@@ -24,6 +24,11 @@ dictionaries and the runtime libraries, so one download is all it takes; nothing
 has to be assembled by hand.**  See `USAGE.md` inside it (Chinese + English).  To
 build from source see *Build* below.
 
+The one exception is Japanese kanji: its MeCab/UniDic dictionary (~49 MB packed)
+is the separate `unidic-lite-dicdir.zip` release asset — the GUI installs it
+with one click, or unpack it as `models/unidic/` yourself.  Kana lyrics work
+without it.
+
 > The macOS build is unsigned: right-click > Open the first time.
 
 ## What it does
@@ -56,10 +61,10 @@ text  ──► G2P ──► candidate grid ──► (optional pronunciation s
   run through the dedicated `GGML_OP_CONV_2D_DW` kernel (no im2col) — the same
   direct path game.cpp uses.
 - **Multilingual G2P** — Chinese (pinyin, hanzi), Cantonese (jyutping),
-  Japanese (kana out of the box; kanji through MeCab + UniDic — unpack the
-  `unidic-lite-dicdir` release asset beside the model), English (dictionary +
-  LSTM OOV inference), with the candidate/pronunciation grid the model was
-  trained with.
+  Japanese (kana out of the box; kanji through MeCab + UniDic — the
+  `unidic-lite-dicdir` release asset, installed with one click in the GUI),
+  English (dictionary + LSTM OOV inference), with the candidate/pronunciation
+  grid the model was trained with.
 - **PFML input** — the upstream Pronunciation Flow Markup Language: final
   phonemes (`<word phonemes="zh ong">重</word>`) and language scopes
   (`<scope language="ja">東京</scope>`) embed directly in the transcript.
