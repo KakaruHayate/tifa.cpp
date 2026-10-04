@@ -10,7 +10,7 @@
 #define TIFA_GGML_VERSION_MINOR 1
 #endif
 #ifndef TIFA_GGML_VERSION_PATCH
-#define TIFA_GGML_VERSION_PATCH 4
+#define TIFA_GGML_VERSION_PATCH 5
 #endif
 
 namespace tifa_ggml {
