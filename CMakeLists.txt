@@ -167,7 +167,6 @@ set(TIFA_GGML_CORE_SOURCES
     src/g2p/public_api.cpp
     src/breath/breath_mel.cpp
     src/breath/breath_net.cpp
-    src/breath/fbl_net.cpp
     src/breath/breath.cpp
 )
 

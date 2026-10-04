@@ -2,8 +2,6 @@
 
 #include "breath.h"
 
-#include "fbl_net.h"
-
 #include "breath_mel.h"
 #include "breath_net.h"
 #include "gguf_io.h"
@@ -237,10 +235,6 @@ std::vector<float> get_float_array(gguf_context * g, const std::string & key) {
 
 struct BreathModel::Impl {
     BreathNet           net;
-    // FoxBreatheLabeler models are a different animal: raw-waveform framing and
-    // a single AP head, so they carry their own net and bypass BreathFeatures.
-    bool                is_fbl = false;
-    internal::FblNet    fbl;
     BreathFeatureConfig feat;
     PostProcess         pp;
     int                 fps        = 100;
@@ -254,10 +248,6 @@ struct BreathModel::Impl {
     void infer(const float * wav, std::size_t n, int sample_rate,
                BreathFeatures & feats, std::vector<float> & ap_prob,
                std::vector<float> & sp_prob) const;
-
-    // AP probability per frame at `fbl.config().fps`, windowed and averaged.
-    void infer_fbl(const float * wav, std::size_t n, int sample_rate,
-                   std::vector<float> & ap_prob) const;
 };
 
 void BreathModel::Impl::infer(const float * wav, std::size_t n, int sample_rate,
@@ -337,9 +327,7 @@ BreathModel & BreathModel::operator=(BreathModel &&) noexcept = default;
 int BreathModel::sample_rate() const noexcept { return impl_->feat.sample_rate; }
 int BreathModel::fps() const noexcept { return impl_->fps; }
 float BreathModel::threshold() const noexcept { return impl_->threshold; }
-const char * BreathModel::backend_name() const noexcept {
-    return impl_->is_fbl ? impl_->fbl.backend_name() : impl_->net.backend_name();
-}
+const char * BreathModel::backend_name() const noexcept { return impl_->net.backend_name(); }
 
 BreathModel BreathModel::load(const std::string & gguf_path) {
     BreathModel m;
@@ -394,20 +382,6 @@ BreathModel BreathModel::load(const std::string & gguf_path) {
     const auto sp = gguf.get_int_opt("breath.head.sp");
     impl.head_sp = sp ? static_cast<int>(*sp) : -1;
 
-    // FoxBreatheLabeler: same GGUF envelope, different front end and head.
-    if (gguf.get_string_opt("breath.model_kind").value_or("breathlab") == "fbl") {
-        impl.is_fbl = true;
-        impl.fbl = internal::FblNet::load(gguf_path);
-        impl.feat.sample_rate = impl.fbl.config().sample_rate;
-        impl.fps       = static_cast<int>(std::lround(impl.fbl.config().fps));
-        impl.threshold = impl.fbl.config().threshold;
-        impl.win_frames = static_cast<int>(std::lround(
-            get_float(gguf, "breath.eval.infer_window_sec", 12.0f) * impl.fps));
-        impl.hop_frames = static_cast<int>(std::lround(
-            get_float(gguf, "breath.eval.infer_hop_sec", 6.0f) * impl.fps));
-        return m;
-    }
-
     impl.net = BreathNet::load(gguf_path);
     return m;
 }
@@ -419,139 +393,10 @@ void BreathModel::probabilities(const float * wav, std::size_t n, int sample_rat
     impl_->infer(wav, n, sample_rate, feats, ap_prob, sp_prob);
 }
 
-// FBL's own hysteresis: keep a run above `threshold` as long as the dips inside
-// it are shorter than `max_gap`, and drop runs shorter than `min_frames`.
-// Mirrors FoxBreatheLabeler's `find_segments_dynamic`.
-std::vector<std::pair<int, int>> fbl_prob_to_events(const std::vector<float> & prob,
-                                                    float threshold, int max_gap,
-                                                    int min_frames) {
-    std::vector<std::pair<int, int>> out;
-    const int n = static_cast<int>(prob.size());
-    int start = -1, gap = 0;
-    for (int i = 0; i < n; ++i) {
-        if (prob[static_cast<std::size_t>(i)] >= threshold) {
-            if (start < 0) start = i;
-            gap = 0;
-        } else if (start >= 0) {
-            if (gap < max_gap) {
-                ++gap;
-            } else {
-                const int end = i - gap - 1;
-                if (end > start && (end - start) >= min_frames) out.emplace_back(start, end);
-                start = -1;
-                gap = 0;
-            }
-        }
-    }
-    if (start >= 0 && (n - start) >= min_frames) out.emplace_back(start, n - 1);
-    return out;
-}
-
-void BreathModel::Impl::infer_fbl(const float * wav, std::size_t n, int sample_rate,
-                                  std::vector<float> & ap_prob) const {
-    if (!wav || n == 0) throw InvalidArgument("breath: empty waveform");
-    const internal::FblConfig & fc = fbl.config();
-
-    std::vector<float> mono;
-    if (sample_rate != fc.sample_rate) {
-        mono = internal::breath_resample_poly(wav, n, sample_rate, fc.sample_rate);
-    } else {
-        mono.assign(wav, wav + n);
-    }
-
-    // The graph pads and unfolds itself: frame t is `hop` samples after frame
-    // t-1 and `spec_win` wide, taken from the signal padded by (win-hop)/2.
-    const int pad = (fc.spec_win - fc.hop) / 2;
-    if (static_cast<long>(mono.size()) + 2 * pad < fc.spec_win) {
-        throw InvalidArgument("breath: clip shorter than one FBL frame");
-    }
-    const int T = static_cast<int>((static_cast<long>(mono.size()) + 2 * pad - fc.spec_win)
-                                   / fc.hop) + 1;
-
-    // [spec_win, T] with the sample index innermost, so frames [s, s+w) are one
-    // contiguous run and a window needs no copy.
-    std::vector<float> frames(static_cast<std::size_t>(fc.spec_win) * T, 0.0f);
-    for (int t = 0; t < T; ++t) {
-        for (int k = 0; k < fc.spec_win; ++k) {
-            const long j = static_cast<long>(t) * fc.hop + k - pad;
-            if (j >= 0 && j < static_cast<long>(mono.size())) {
-                frames[static_cast<std::size_t>(k) +
-                       static_cast<std::size_t>(fc.spec_win) * t] =
-                    mono[static_cast<std::size_t>(j)];
-            }
-        }
-    }
-
-    std::vector<int> starts;
-    if (T <= win_frames) {
-        starts.push_back(0);
-    } else {
-        for (int s = 0; s <= T - win_frames; s += std::max(1, hop_frames)) starts.push_back(s);
-        if (starts.back() != T - win_frames) starts.push_back(T - win_frames);
-    }
-
-    std::vector<double> acc(static_cast<std::size_t>(T), 0.0);
-    std::vector<double> wsum(static_cast<std::size_t>(T), 0.0);
-    for (int s : starts) {
-        const int w = std::min(win_frames, T - s);
-        const std::vector<float> out =
-            fbl.run(frames.data() + static_cast<std::size_t>(fc.spec_win) * s, w);
-        for (int t = 0; t < w; ++t) {
-            acc[static_cast<std::size_t>(s + t)] += out[static_cast<std::size_t>(t)];
-            wsum[static_cast<std::size_t>(s + t)] += 1.0;
-        }
-    }
-    ap_prob.resize(static_cast<std::size_t>(T));
-    for (int t = 0; t < T; ++t) {
-        const double den = std::max(wsum[static_cast<std::size_t>(t)], 1e-8);
-        ap_prob[static_cast<std::size_t>(t)] = static_cast<float>(acc[static_cast<std::size_t>(t)] / den);
-    }
-}
-
 void BreathModel::run(const float * wav, std::size_t n, int sample_rate,
                       std::vector<BreathEvent> & ap_events,
                       std::vector<BreathSegment> & segments) const {
     const auto & impl = *impl_;
-
-    // FoxBreatheLabeler: one AP head and no SP head, so the timeline is AP vs
-    // everything else.  Silence is not lost -- the dataset step fills the gaps
-    // with SP at serialisation, which is where SP belongs anyway (the aligner
-    // drops it as a stop symbol).
-    if (impl.is_fbl) {
-        std::vector<float> ap_prob;
-        impl.infer_fbl(wav, n, sample_rate, ap_prob);
-        const internal::FblConfig & fc = impl.fbl.config();
-        const auto runs = fbl_prob_to_events(ap_prob, impl.threshold, fc.max_gap, fc.min_dur);
-
-        const double inv = 1.0 / impl.fps;
-        ap_events.clear();
-        ap_events.reserve(runs.size());
-        for (const auto & r : runs) {
-            ap_events.push_back(BreathEvent{static_cast<float>(r.first * inv),
-                                            static_cast<float>(r.second * inv)});
-        }
-        segments.clear();
-        const int nf = static_cast<int>(ap_prob.size());
-        int i = 0;
-        while (i < nf) {
-            const bool is_ap = runs.end() != std::find_if(
-                runs.begin(), runs.end(),
-                [i](const std::pair<int, int> & r) { return i >= r.first && i <= r.second; });
-            int j = i + 1;
-            while (j < nf) {
-                const bool ap_j = runs.end() != std::find_if(
-                    runs.begin(), runs.end(),
-                    [j](const std::pair<int, int> & r) { return j >= r.first && j <= r.second; });
-                if (ap_j != is_ap) break;
-                ++j;
-            }
-            segments.push_back(BreathSegment{is_ap ? "AP" : "V",
-                                             static_cast<float>(i * inv),
-                                             static_cast<float>(j * inv)});
-            i = j;
-        }
-        return;
-    }
 
     BreathFeatures feats;
     std::vector<float> ap_prob, sp_prob;
