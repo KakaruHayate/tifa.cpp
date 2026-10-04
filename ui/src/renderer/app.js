@@ -184,10 +184,10 @@ async function loadBreathModel(modelPath, quiet) {
 // ---- 附加内容（可选，按需下载） --------------------------------------------
 // 目前只有日语汉字词典（MeCab/UniDic）：假名歌词开箱即用，汉字需要它。
 
-async function refreshExtras() {
+async function refreshExtras({ preserveStatus = false } = {}) {
   const r = await api.extrasStatus();
   if (!r.ok) {
-    setStatus('unidic-status', 'unidicDot', '日语词典：状态未知', 'bad');
+    if (!preserveStatus) setStatus('unidic-status', 'unidicDot', '日语词典：状态未知', 'bad');
     return;
   }
   if (r.installing) return; // 进度回调在更新这一行
@@ -195,9 +195,11 @@ async function refreshExtras() {
     setStatus('unidic-status', 'unidicDot', '日语汉字词典已安装', 'ok');
     $('btn-unidic').classList.add('hidden');
   } else {
-    setStatus('unidic-status', 'unidicDot',
-      r.modelDir ? '日语汉字词典未安装（假名可用，汉字需要）' : '日语汉字词典未安装：请先选择对齐模型',
-      '');
+    if (!preserveStatus) {
+      setStatus('unidic-status', 'unidicDot',
+        r.modelDir ? '日语汉字词典未安装（假名可用，汉字需要）' : '日语汉字词典未安装：请先选择对齐模型',
+        '');
+    }
     $('btn-unidic').classList.toggle('hidden', !r.modelDir);
   }
 }
@@ -215,14 +217,14 @@ async function installUnidic() {
     } else {
       setStatus('unidic-status', 'unidicDot', '日语词典安装失败', 'bad');
       log('日语词典安装失败：' + (r.error || ''));
-      await refreshExtras();
+      await refreshExtras({ preserveStatus: true });
     }
   } catch (err) {
     // IPC itself rejected (handler threw before the handle() guard): report it
     // through the same path and make sure the button comes back.
     setStatus('unidic-status', 'unidicDot', '日语词典安装失败', 'bad');
     log('日语词典安装失败：' + ((err && err.message) || err));
-    await refreshExtras();
+    await refreshExtras({ preserveStatus: true });
   } finally {
     btn.disabled = false;
   }
