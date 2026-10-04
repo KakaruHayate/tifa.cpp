@@ -13,10 +13,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const { spawn, spawnSync } = require('child_process');
-const AdmZip = require('adm-zip');          // reserved for a future .zip model bundle
+const AdmZip = require('adm-zip');          // extras install: unpack the unidic dictionary asset
 const P = require('./lib/parse.js');
-
-void AdmZip;
 
 // ---------------------------------------------------------------------------
 // Paths / persisted config
@@ -303,6 +301,98 @@ function registerIpc() {
       if (aligner || breath) return { ok: true, dir, aligner, breath };
     }
     return { ok: false, error: 'no models/*.gguf beside the app' };
+  });
+
+  // --- extras (optional add-ons installed on demand) ----------------------
+  // The MeCab/UniDic dictionary behind Japanese kanji lyrics is far too big
+  // for the bundles (~260 MB extracted), so it ships as its own release
+  // asset.  `releases/latest/download/...` always resolves to the newest
+  // release, so no version bookkeeping here; the archive carries a `unidic/`
+  // prefix that must land next to the aligner model.
+  const UNIDIC_URL =
+    'https://github.com/KakaruHayate/tifa.cpp/releases/latest/download/unidic-lite-dicdir.zip';
+  let unidicInstalling = false;
+
+  function modelsBaseDir() {
+    // Mirror the CLI's dict_dir resolution (main.cpp): <model dir>/dicts when
+    // it exists, the model dir otherwise -- unidic/ must land where
+    // find_unidic_dir() probes.
+    const cfg = readConfig();
+    const candidates = [];
+    if (cfg.modelPath) candidates.push(path.dirname(cfg.modelPath));
+    const exeDir = path.dirname(app.getPath('exe'));
+    candidates.push(
+      path.join(exeDir, 'models'),
+      path.join(APP_ROOT, '..', 'models'),
+      path.join(process.cwd(), 'models'),
+    );
+    for (const dir of candidates) {
+      try {
+        if (!fs.statSync(dir).isDirectory()) continue;
+        const dicts = path.join(dir, 'dicts');
+        return fs.existsSync(dicts) ? dicts : dir;
+      } catch { /* keep looking */ }
+    }
+    return null;
+  }
+
+  handle('extras:status', () => {
+    const base = modelsBaseDir();
+    return {
+      ok: true,
+      modelDir: base,
+      unidicInstalled: !!(base && fs.existsSync(path.join(base, 'unidic', 'sys.dic'))),
+      installing: unidicInstalling,
+    };
+  });
+
+  handle('extras:install-unidic', async (event) => {
+    if (unidicInstalling) return { ok: false, error: 'an install is already running' };
+    const base = modelsBaseDir();
+    if (!base) return { ok: false, error: '未找到模型目录：请先选择对齐模型' };
+    if (fs.existsSync(path.join(base, 'unidic', 'sys.dic'))) {
+      return { ok: true, already: true, dir: path.join(base, 'unidic') };
+    }
+    unidicInstalling = true;
+    const progress = (received, total) => {
+      try { event.sender.send('extras:progress', { received, total }); } catch { /* window gone */ }
+    };
+    try {
+      progress(0, 0);
+      // 10 minutes is generous for 49 MB; a stalled connection must not hang
+      // the row forever.
+      const res = await fetch(UNIDIC_URL, {
+        redirect: 'follow',
+        signal: AbortSignal.timeout(10 * 60 * 1000),
+      });
+      if (!res.ok) throw new Error('download failed: HTTP ' + res.status);
+      const total  = Number(res.headers.get('content-length') || 0);
+      const chunks = [];
+      let received = 0;
+      for (const reader = res.body.getReader();;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(Buffer.from(value));
+        received += value.byteLength;
+        progress(received, total);
+      }
+      const zip = new AdmZip(Buffer.concat(chunks));
+      // Refuse anything that is not the dictionary asset, and extract only
+      // the unidic/ subtree -- nothing else in the archive may touch disk.
+      const entries = zip.getEntries().filter((e) => e.entryName.replace(/\\/g, '/').startsWith('unidic/'));
+      if (!entries.some((e) => e.entryName.replace(/\\/g, '/') === 'unidic/sys.dic')) {
+        throw new Error('downloaded archive does not contain unidic/sys.dic');
+      }
+      for (const entry of entries) {
+        zip.extractEntryTo(entry, base, /* maintainEntryPath */ true, /* overwrite */ true);
+      }
+      if (!fs.existsSync(path.join(base, 'unidic', 'sys.dic'))) {
+        throw new Error('extraction did not produce unidic/sys.dic');
+      }
+      return { ok: true, dir: path.join(base, 'unidic'), bytes: received };
+    } finally {
+      unidicInstalling = false;
+    }
   });
 
   // --- breath (BreathLab) model -------------------------------------------------

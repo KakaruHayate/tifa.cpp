@@ -29,6 +29,15 @@ contextBridge.exposeInMainWorld('bridge', {
   modelInfo: (p) => ipcRenderer.invoke('model:info', p),
   inspectModel: (p) => ipcRenderer.invoke('model:inspect', p),
 
+  // extras (optional add-ons, e.g. the Japanese kanji dictionary)
+  extrasStatus: () => ipcRenderer.invoke('extras:status'),
+  installUnidic: () => ipcRenderer.invoke('extras:install-unidic'),
+  onExtrasProgress: (cb) => {
+    const listener = (_e, payload) => cb(payload);
+    ipcRenderer.on('extras:progress', listener);
+    return () => ipcRenderer.removeListener('extras:progress', listener);
+  },
+
   // inputs
   pickFiles: () => ipcRenderer.invoke('inputs:pick-files'),
   pickFolder: () => ipcRenderer.invoke('inputs:pick-folder'),

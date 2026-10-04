@@ -118,6 +118,20 @@ jobs:
           echo "f16=$F16 q4_0=$Q4"
           test "$Q4" -lt "$F16"
 
+      - name: Package the unidic-lite dictionary (Japanese kanji G2P)
+        # The `japanese-mecab` converter needs a compiled MeCab/UniDic dicdir
+        # (~260 MB extracted): far too big for the bundles, so it ships as its
+        # own release asset.  Tolerant: a PyPI hiccup must not fail the
+        # release; without the dictionary the converter falls back to kana.
+        continue-on-error: true
+        run: |
+          pip download unidic-lite==1.0.8 --no-deps -d unidic_dl
+          for f in unidic_dl/unidic_lite-*.tar.gz; do
+            [ -f "$f" ] || { echo "unidic-lite sdist not found in unidic_dl/"; exit 1; }
+            python scripts/package_unidic.py --sdist "$f" --out unidic-lite-dicdir.zip
+          done
+          ls -la unidic-lite-dicdir.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: tifa-models
@@ -129,6 +143,13 @@ jobs:
             breath-fbl-q4_0.gguf
             breath-fbl-f16.gguf
           if-no-files-found: warn
+          retention-days: 7
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unidic-dicdir
+          path: unidic-lite-dicdir.zip
+          if-no-files-found: ignore
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -496,10 +517,20 @@ jobs:
           path: dist-src
           pattern: "breathlab-source"
 
+      # The MeCab/UniDic dictionary for the `japanese-mecab` converter ships
+      # as its own asset (see convert-model above): users unpack it next to
+      # the model, the bundles never carry it.
+      - name: Collect the unidic-lite dictionary asset
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          path: dist-unidic
+          pattern: "unidic-dicdir"
+
       - name: Flatten
         run: |
-          mkdir -p out dist-src
-          find dist-cli dist-gui dist-src -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
+          mkdir -p out dist-src dist-unidic
+          find dist-cli dist-gui dist-src dist-unidic -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
           ls -la out/
 
       - name: Publish release

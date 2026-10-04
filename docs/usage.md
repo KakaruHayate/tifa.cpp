@@ -113,6 +113,14 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 - **没有独立显卡 / 想强制 CPU**：`--backend cpu`（GUI 在高级选项里）。
 - **词典找不到**：词典以文件形式放在模型目录旁（`models/dictionaries/`）。
   换用自己的模型目录时，把 `dictionaries/`、`cpp_pinyin/`、`assets/` 一起放过去。
+- **日语**：stock 模型的 config 声明的是 `japanese-mecab`，即上游的
+  MeCab + UniDic 形态分析。**假名歌词（平假名/片假名）开箱即用**：没有词典时
+  这个 id 自动回退到假名转换器，`-l ja` 直接可用。**汉字歌词**需要
+  MeCab/UniDic 词典：GUI 在"附加内容"里**一键下载安装**；CLI 用户从 release
+  下载 `unidic-lite-dicdir.zip`（约 49 MB）解压到模型目录旁
+  `models/unidic/`（自动探测；也可用转换器的 `unidic_dir` kwarg 指向任意含
+  `sys.dic` 的目录）。装好后 MeCab 负责分词、UniDic 给出假名读音，
+  全部读音候选保留给对齐器；没有读音的汉字词按文件报错，不会静默给错误音素。
 - **PFML**：文本里可以写 `<word phonemes="zh ong">重</word>`（直接给音素，
   不经词典）或 `<scope language="ja">東京</scope>`（指定语言区间）。按 PFML 1.0
   解析：支持完整 `<reading>/<path>/<group>` 树、注释 `<!-- -->` 与 CDATA；
@@ -246,6 +254,17 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 - **Dictionaries not found**: they are files beside the model directory
   (`models/dictionaries/`).  When using your own model directory, copy
   `dictionaries/`, `cpp_pinyin/` and `assets/` along with it.
+- **Japanese**: the stock model's config declares `japanese-mecab` -- upstream's
+  MeCab + UniDic morphological analysis.  **Kana lyrics work with `-l ja` out
+  of the box**: without a dictionary the id falls back to the kana converter.
+  **Kanji lyrics** additionally need the MeCab/UniDic dictionary: the GUI
+  installs it with one click under "Extras"; CLI users download
+  `unidic-lite-dicdir.zip` (~49 MB) from the release and unpack it beside the
+  model as `models/unidic/` (probed automatically; the converter's
+  `unidic_dir` kwarg points anywhere with a `sys.dic`).  With it, MeCab
+  segments the lyrics and UniDic supplies the kana readings, every reading
+  candidate kept for the aligner; a kanji word without a reading fails per
+  file instead of silently producing wrong phonemes.
 - **PFML**: transcripts may embed final phonemes directly
   (`<word phonemes="zh ong">重</word>`) or language scopes
   (`<scope language="ja">東京</scope>`).  Parsing follows PFML 1.0: full

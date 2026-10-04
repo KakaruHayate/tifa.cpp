@@ -144,6 +144,9 @@ order), `spans` **exactly equal**.
   文本会先 lowercase，直接音素不要放普通文本里）。
 - **发布包布局**：`models/{tifa.gguf, dictionaries/, cpp_pinyin/, assets/LstmG2p-Eng.gguf}`。
   GGUF 里 `@dictionaries/...`、`@assets/...` 相对模型目录解析，平铺即失效。
+  可选 `models/unidic/`（MeCab/UniDic 词典，日语汉字用）不进 bundle：作为
+  `unidic-lite-dicdir.zip` release 资产单独发布，`find_unidic_dir` 探测
+  `<dict_dir>/unidic`（哨兵 `sys.dic`），缺词典时 japanese-mecab 回退假名。
 - **发布包必须在打包处"就地跑一次"**：workflow 组装完 bundle 后，
   `cd` 进 bundle 目录执行 `./tifa_ggml_cli --version` 与
   `inspect models/tifa.gguf`，失败即 fail job。教训：2026-10-01 的 GUI 包

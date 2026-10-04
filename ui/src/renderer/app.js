@@ -181,6 +181,53 @@ async function loadBreathModel(modelPath, quiet) {
   return false;
 }
 
+// ---- 附加内容（可选，按需下载） --------------------------------------------
+// 目前只有日语汉字词典（MeCab/UniDic）：假名歌词开箱即用，汉字需要它。
+
+async function refreshExtras() {
+  const r = await api.extrasStatus();
+  if (!r.ok) {
+    setStatus('unidic-status', 'unidicDot', '日语词典：状态未知', 'bad');
+    return;
+  }
+  if (r.installing) return; // 进度回调在更新这一行
+  if (r.unidicInstalled) {
+    setStatus('unidic-status', 'unidicDot', '日语汉字词典已安装', 'ok');
+    $('btn-unidic').classList.add('hidden');
+  } else {
+    setStatus('unidic-status', 'unidicDot',
+      r.modelDir ? '日语汉字词典未安装（假名可用，汉字需要）' : '日语汉字词典未安装：请先选择对齐模型',
+      '');
+    $('btn-unidic').classList.toggle('hidden', !r.modelDir);
+  }
+}
+
+async function installUnidic() {
+  const btn = $('btn-unidic');
+  btn.disabled = true;
+  setStatus('unidic-status', 'unidicDot', '日语词典：下载中 0%', 'running');
+  try {
+    const r = await api.installUnidic();
+    if (r.ok) {
+      setStatus('unidic-status', 'unidicDot', '日语汉字词典已安装', 'ok');
+      btn.classList.add('hidden');
+      log('日语汉字词典安装完成：' + (r.dir || ''));
+    } else {
+      setStatus('unidic-status', 'unidicDot', '日语词典安装失败', 'bad');
+      log('日语词典安装失败：' + (r.error || ''));
+      await refreshExtras();
+    }
+  } catch (err) {
+    // IPC itself rejected (handler threw before the handle() guard): report it
+    // through the same path and make sure the button comes back.
+    setStatus('unidic-status', 'unidicDot', '日语词典安装失败', 'bad');
+    log('日语词典安装失败：' + ((err && err.message) || err));
+    await refreshExtras();
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function runInspect() {
   if (!S.cliPath || !S.modelPath) return;
   const r = await api.inspectModel(S.modelPath);
@@ -464,12 +511,22 @@ function bind() {
   $('btn-inspect').onclick = runInspect;
   $('btn-model').onclick = async () => {
     const r = await api.pickModel();
-    if (r.ok) await loadModel(r.modelPath);
+    // The dictionary lives beside the model: a new model may move it between
+    // installed / installable, so refresh the extras row either way.
+    await loadModel(r.ok ? r.modelPath : undefined);
+    await refreshExtras();
   };
   $('btn-breath-model').onclick = async () => {
     const r = await api.pickBreathModel();
     if (r.ok) await loadBreathModel(r.breathModel);
   };
+  $('btn-unidic').onclick = installUnidic;
+  api.onExtrasProgress(({ received, total }) => {
+    const pct = total ? Math.round((received / total) * 100) : null;
+    const mb = Math.round(received / 1048576);
+    setStatus('unidic-status', 'unidicDot',
+      '日语词典：下载中 ' + (pct != null ? pct + '%' : mb + ' MB'), 'running');
+  });
 
   // 输入
   $('btn-add-files').onclick = async () => {
@@ -602,6 +659,7 @@ window.TifaLabel = {
       log('未在默认路径找到模型（' + auto.error + '），请手动选择。');
     }
   }
+  await refreshExtras();
   if (cfg.config && cfg.config.csvPath) {
     const el = $('csv-status');
     el.dataset.path = cfg.config.csvPath;

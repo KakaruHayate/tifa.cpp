@@ -20,6 +20,10 @@
 命令行包。**每个包都自带模型、词典与运行库，下载一个就能用，不需要自己拼装**；
 用法见包内 `USAGE.md`（中英双语）。想自己构建见下方「构建」。
 
+唯一的例外是日语汉字：其 MeCab/UniDic 词典（压缩后约 49 MB）是单独的
+`unidic-lite-dicdir.zip` release 资产——GUI 里一键安装，或自己解压到
+`models/unidic/`。不装它假名歌词照常可用。
+
 > macOS 的包未签名，首次打开需右键 →「打开」。
 
 ## 功能
@@ -42,8 +46,9 @@ Praat 三层 TextGrid（`texts` / `words` / `phones`），并可选输出自检�
 - **快** —— 20 段基准下 RTX 2070（Vulkan，F16）每文件 0.15 s，约 42× 实时；
   CPU F16 约 11.5× 实时。CgMLP 的深度可分离卷积走专用的
   `GGML_OP_CONV_2D_DW` 核（无 im2col），与 game.cpp 相同的 direct 路径。
-- **多语言 G2P** —— 中文（拼音/汉字）、粤语（粤拼）、日语（假名）、英文
-  （词典 + LSTM OOV 推理）；完整保留模型训练时使用的候选网格。
+- **多语言 G2P** —— 中文（拼音/汉字）、粤语（粤拼）、日语（假名开箱即用；
+  汉字经 MeCab + UniDic 形态分析——`unidic-lite-dicdir` release 资产，GUI
+  一键安装）、英文（词典 + LSTM OOV 推理）；完整保留模型训练时使用的候选网格。
 - **支持 PFML** —— 上游 openvpi 要求的 Pronunciation Flow Markup Language：
   文本里可以直接固定音素与语言区间（`<word phonemes="zh ong">重</word>`、
   `<scope language="ja">東京</scope>`）。
@@ -113,6 +118,8 @@ models/
   dictionaries/   ds-zh-pinyin-lite.txt / jyutping_dict.txt / japanese_dict_full.txt / ds_cmudict-07b.txt
   cpp_pinyin/     汉语拼音引擎词典（mandarin / cantonese）
   assets/         LstmG2p-Eng.gguf（英文 OOV）
+  unidic/         （可选）MeCab/UniDic 词典——日语汉字歌词需要；从 release 下载
+                  unidic-lite-dicdir.zip 解压到这里，或在 GUI"附加内容"里一键安装
 ```
 
 ## 命令行

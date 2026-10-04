@@ -24,6 +24,11 @@ dictionaries and the runtime libraries, so one download is all it takes; nothing
 has to be assembled by hand.**  See `USAGE.md` inside it (Chinese + English).  To
 build from source see *Build* below.
 
+The one exception is Japanese kanji: its MeCab/UniDic dictionary (~49 MB packed)
+is the separate `unidic-lite-dicdir.zip` release asset — the GUI installs it
+with one click, or unpack it as `models/unidic/` yourself.  Kana lyrics work
+without it.
+
 > The macOS build is unsigned: right-click > Open the first time.
 
 ## What it does
@@ -56,8 +61,10 @@ text  ──► G2P ──► candidate grid ──► (optional pronunciation s
   run through the dedicated `GGML_OP_CONV_2D_DW` kernel (no im2col) — the same
   direct path game.cpp uses.
 - **Multilingual G2P** — Chinese (pinyin, hanzi), Cantonese (jyutping),
-  Japanese (kana), English (dictionary + LSTM OOV inference), with the
-  candidate/pronunciation grid the model was trained with.
+  Japanese (kana out of the box; kanji through MeCab + UniDic — the
+  `unidic-lite-dicdir` release asset, installed with one click in the GUI),
+  English (dictionary + LSTM OOV inference), with the candidate/pronunciation
+  grid the model was trained with.
 - **PFML input** — the upstream Pronunciation Flow Markup Language: final
   phonemes (`<word phonemes="zh ong">重</word>`) and language scopes
   (`<scope language="ja">東京</scope>`) embed directly in the transcript.
@@ -113,7 +120,10 @@ python scripts/convert_tifa_to_gguf.py \
 The GGUF embeds the vocabulary and the G2P pipeline configuration; the
 pronunciation dictionaries stay as files next to the model
 (`ds-zh-pinyin-lite.txt`, `jyutping_dict.txt`, `japanese_dict_full.txt`,
-`ds_cmudict-07b.txt`).
+`ds_cmudict-07b.txt`).  For Japanese kanji lyrics, additionally unpack the
+`unidic-lite-dicdir.zip` release asset so the MeCab/UniDic dictionary sits at
+`models/unidic/` (see [docs/usage.md](docs/usage.md)); licenses in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## CLI
 
