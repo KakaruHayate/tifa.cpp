@@ -65,6 +65,7 @@ Breathe options:
                               -> align --textgrid)
       --phones-tier NAME      tier to merge into       (default: phones)
       --min-insert-ms MS      shortest AP/SP inserted (default: 50)
+      --ep                    detect and annotate EP (exhale) events (BreathLab v6)
   -q, --quiet                 only report errors
 
 Align options:
@@ -540,6 +541,7 @@ struct BreatheOptions {
     std::string merge;              // alignment TextGrid file or directory
     std::string phones_tier = "phones";
     double      min_insert_ms = 50.0;
+    bool        ep = false;
     bool        quiet = false;
 };
 
@@ -664,9 +666,11 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
 
             const auto t0 = std::chrono::steady_clock::now();
             std::vector<BreathEvent>   ap_events;
+            std::vector<BreathEvent>   ep_events;
             std::vector<BreathSegment> segments;
             model.run(audio_buf.samples.data(), audio_buf.samples.size(),
-                      audio_buf.sample_rate, ap_events, segments);
+                      audio_buf.sample_rate, ap_events, segments,
+                      opt.ep ? &ep_events : nullptr, opt.ep);
             const auto t1 = std::chrono::steady_clock::now();
             const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -685,11 +689,26 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
                 }
 
                 if (opt.merge.empty()) {
+                    std::vector<TextGridTier> out_tiers;
+                    out_tiers.push_back(std::move(breath_tier));
+                    if (opt.ep && !ep_events.empty()) {
+                        TextGridTier ep_tier;
+                        ep_tier.name = "EP";
+                        ep_tier.intervals.reserve(ep_events.size());
+                        for (const BreathEvent & ev : ep_events) {
+                            TextGridInterval interval;
+                            interval.xmin = ev.start;
+                            interval.xmax = ev.end;
+                            interval.text = "EP";
+                            ep_tier.intervals.push_back(std::move(interval));
+                        }
+                        out_tiers.push_back(std::move(ep_tier));
+                    }
                     write_textgrid_file(
                         (out_dir / (identifier + ".breath.TextGrid")).string(),
-                        { std::move(breath_tier) }, seconds);
+                        std::move(out_tiers), seconds);
                 } else {
-                    // 2PASS step 2: fold the AP/SP segments into the phones
+                    // 2PASS step 2: fold the AP/SP/EP segments into the phones
                     // tier of the first-pass alignment and write the enriched
                     // TextGrid the second `align --textgrid` pass consumes.
                     fs::path alignment = opt.merge;
@@ -717,8 +736,8 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
                         (out_dir / (identifier + ".TextGrid")).string(),
                         { std::move(merged_tier), std::move(breath_tier) }, seconds);
                     if (!opt.quiet) {
-                        std::fprintf(stderr, "breath: merged %zu AP/SP into %zu phones\n",
-                                     inserted, phones.size());
+                        std::fprintf(stderr, "breath: merged %zu %s into %zu phones\n",
+                                     inserted, opt.ep ? "AP/SP/EP" : "AP/SP", phones.size());
                     }
                 }
             }
@@ -740,12 +759,21 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
                 };
 
                 Value ap_list  = arr();
+                Value ep_list  = arr();
                 Value seg_list = arr();
                 for (const BreathEvent & event : ap_events) {
                     Value item = obj();
                     item.obj.push_back({ "start", num(event.start) });
                     item.obj.push_back({ "end",   num(event.end) });
                     ap_list.arr.push_back(std::move(item));
+                }
+                if (opt.ep) {
+                    for (const BreathEvent & event : ep_events) {
+                        Value item = obj();
+                        item.obj.push_back({ "start", num(event.start) });
+                        item.obj.push_back({ "end",   num(event.end) });
+                        ep_list.arr.push_back(std::move(item));
+                    }
                 }
                 for (const BreathSegment & segment : segments) {
                     Value item = obj();
@@ -758,6 +786,9 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
                 doc.obj.push_back({ "sample_rate", num(audio_buf.sample_rate) });
                 doc.obj.push_back({ "duration",    num(seconds) });
                 doc.obj.push_back({ "ap",          std::move(ap_list) });
+                if (opt.ep) {
+                    doc.obj.push_back({ "ep",      std::move(ep_list) });
+                }
                 doc.obj.push_back({ "segments",    std::move(seg_list) });
                 std::ofstream out(out_dir / (identifier + ".breath.json"), std::ios::binary);
                 out << bren_json::dump(doc, 2) << "\n";
@@ -765,8 +796,13 @@ int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
 
             ++ok;
             if (!opt.quiet) {
-                std::printf("%-40s %6.1f s  %3zu AP events  %4zu segments  %7.1f ms\n",
-                            identifier.c_str(), seconds, ap_events.size(), segments.size(), ms);
+                if (opt.ep) {
+                    std::printf("%-40s %6.1f s  %3zu AP  %3zu EP  %4zu segments  %7.1f ms\n",
+                                identifier.c_str(), seconds, ap_events.size(), ep_events.size(), segments.size(), ms);
+                } else {
+                    std::printf("%-40s %6.1f s  %3zu AP events  %4zu segments  %7.1f ms\n",
+                                identifier.c_str(), seconds, ap_events.size(), segments.size(), ms);
+                }
             }
         } catch (const std::exception & e) {
             ++skipped;
@@ -848,6 +884,7 @@ int main(int argc, char ** argv) {
                 else if (a == "--merge")                   opt.merge = value();
                 else if (a == "--phones-tier")             opt.phones_tier = value();
                 else if (a == "--min-insert-ms")           opt.min_insert_ms = std::strtod(value().c_str(), nullptr);
+                else if (a == "--ep")                      opt.ep = true;
                 else if (a == "-q" || a == "--quiet")      opt.quiet = true;
                 else throw InvalidArgument("unknown option: " + a);
             }

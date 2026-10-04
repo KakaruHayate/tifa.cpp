@@ -38,6 +38,7 @@ struct PostProcess {
     float sp_floor_margin_db   = 8.0f;
     float sp_hf_guard_db       = 6.0f;
     float sp_min_dur_ms        = 120.0f;
+    float ep_threshold         = 0.5f;
 };
 
 // Python's round() is half-to-even; every constant in the shipped models lands
@@ -243,16 +244,19 @@ struct BreathModel::Impl {
     int                 hop_frames = 600;
     int                 head_ap    = 0;
     int                 head_sp    = -1;
+    int                 head_ep    = -1;
 
     // features + windowed inference with the overlap average
     void infer(const float * wav, std::size_t n, int sample_rate,
                BreathFeatures & feats, std::vector<float> & ap_prob,
-               std::vector<float> & sp_prob) const;
+               std::vector<float> & sp_prob,
+               std::vector<float> * ep_prob = nullptr) const;
 };
 
 void BreathModel::Impl::infer(const float * wav, std::size_t n, int sample_rate,
                               BreathFeatures & feats, std::vector<float> & ap_prob,
-                              std::vector<float> & sp_prob) const {
+                              std::vector<float> & sp_prob,
+                              std::vector<float> * ep_prob) const {
     if (!wav || n == 0) throw InvalidArgument("breath: empty waveform");
 
     // 1. resample to the model rate (the reference `load_wav` does the same)
@@ -282,6 +286,7 @@ void BreathModel::Impl::infer(const float * wav, std::size_t n, int sample_rate,
     const int n_out = net.config().n_out;
     std::vector<double> ap_acc(static_cast<std::size_t>(T), 0.0);
     std::vector<double> sp_acc(static_cast<std::size_t>(T), 0.0);
+    std::vector<double> ep_acc(static_cast<std::size_t>(T), 0.0);
     std::vector<double> wsum(static_cast<std::size_t>(T), 0.0);
     for (int s : starts) {
         const int w = std::min(win, T - s);
@@ -294,6 +299,9 @@ void BreathModel::Impl::infer(const float * wav, std::size_t n, int sample_rate,
             ap_acc[idx] += out[static_cast<std::size_t>(head_ap) + n_out * t];
             if (head_sp >= 0 && head_sp < n_out) {
                 sp_acc[idx] += out[static_cast<std::size_t>(head_sp) + n_out * t];
+            }
+            if (head_ep >= 0 && head_ep < n_out) {
+                ep_acc[idx] += out[static_cast<std::size_t>(head_ep) + n_out * t];
             }
             wsum[idx] += 1.0;
         }
@@ -311,6 +319,17 @@ void BreathModel::Impl::infer(const float * wav, std::size_t n, int sample_rate,
             const double den = std::max(wsum[static_cast<std::size_t>(t)], 1e-8);
             sp_prob[static_cast<std::size_t>(t)] =
                 static_cast<float>(sp_acc[static_cast<std::size_t>(t)] / den);
+        }
+    }
+    if (ep_prob) {
+        ep_prob->clear();
+        if (head_ep >= 0 && head_ep < n_out) {
+            ep_prob->resize(static_cast<std::size_t>(T));
+            for (int t = 0; t < T; ++t) {
+                const double den = std::max(wsum[static_cast<std::size_t>(t)], 1e-8);
+                (*ep_prob)[static_cast<std::size_t>(t)] =
+                    static_cast<float>(ep_acc[static_cast<std::size_t>(t)] / den);
+            }
         }
     }
 }
@@ -369,6 +388,7 @@ BreathModel BreathModel::load(const std::string & gguf_path) {
     pp.sp_floor_margin_db   = get_float(gguf, "breath.postprocess.sp_floor_margin_db", 8.0f);
     pp.sp_hf_guard_db       = get_float(gguf, "breath.postprocess.sp_hf_guard_db", 6.0f);
     pp.sp_min_dur_ms        = get_float(gguf, "breath.postprocess.sp_min_dur_ms", 120.0f);
+    pp.ep_threshold         = get_float(gguf, "breath.postprocess.ep_threshold", 0.5f);
 
     impl.win_frames = static_cast<int>(std::lround(
         get_float(gguf, "breath.eval.infer_window_sec", 12.0f) * impl.fps));
@@ -381,26 +401,35 @@ BreathModel BreathModel::load(const std::string & gguf_path) {
     // energy + high-band rule in full_segmentation
     const auto sp = gguf.get_int_opt("breath.head.sp");
     impl.head_sp = sp ? static_cast<int>(*sp) : -1;
+    const auto ep = gguf.get_int_opt("breath.head.ep");
+    impl.head_ep = ep ? static_cast<int>(*ep) : -1;
 
     impl.net = BreathNet::load(gguf_path);
     return m;
 }
 
+bool BreathModel::has_ep() const noexcept { return impl_->head_ep >= 0; }
+float BreathModel::ep_threshold() const noexcept { return impl_->pp.ep_threshold; }
+
 void BreathModel::probabilities(const float * wav, std::size_t n, int sample_rate,
                                 std::vector<float> & ap_prob,
-                                std::vector<float> & sp_prob) const {
+                                std::vector<float> & sp_prob,
+                                std::vector<float> * ep_prob) const {
     BreathFeatures feats;
-    impl_->infer(wav, n, sample_rate, feats, ap_prob, sp_prob);
+    impl_->infer(wav, n, sample_rate, feats, ap_prob, sp_prob, ep_prob);
 }
 
 void BreathModel::run(const float * wav, std::size_t n, int sample_rate,
                       std::vector<BreathEvent> & ap_events,
-                      std::vector<BreathSegment> & segments) const {
+                      std::vector<BreathSegment> & segments,
+                      std::vector<BreathEvent> * ep_events,
+                      bool include_ep) const {
     const auto & impl = *impl_;
 
     BreathFeatures feats;
-    std::vector<float> ap_prob, sp_prob;
-    impl.infer(wav, n, sample_rate, feats, ap_prob, sp_prob);
+    std::vector<float> ap_prob, sp_prob, ep_prob;
+    const bool want_ep = (ep_events != nullptr || include_ep) && (impl.head_ep >= 0);
+    impl.infer(wav, n, sample_rate, feats, ap_prob, sp_prob, want_ep ? &ep_prob : nullptr);
 
     std::vector<char> cls;
     const auto runs = full_segmentation(ap_prob, sp_prob, feats.energy_db, feats.hf_db,
@@ -414,6 +443,32 @@ void BreathModel::run(const float * wav, std::size_t n, int sample_rate,
                                         static_cast<float>(r.second * inv_fps)});
     }
 
+    std::vector<std::pair<int, int>> ep_runs;
+    if (want_ep && !ep_prob.empty()) {
+        ep_runs = prob_to_events(ep_prob, impl.fps, impl.pp.ep_threshold, impl.pp);
+        if (ep_events) {
+            ep_events->clear();
+            ep_events->reserve(ep_runs.size());
+            for (const auto & r : ep_runs) {
+                ep_events->push_back(BreathEvent{static_cast<float>(r.first * inv_fps),
+                                                 static_cast<float>(r.second * inv_fps)});
+            }
+        }
+    }
+
+    if (include_ep && !ep_runs.empty()) {
+        const int nf = static_cast<int>(cls.size());
+        for (const auto & r : ep_runs) {
+            const int s = std::max(0, r.first);
+            const int e = std::min(nf, r.second);
+            for (int t = s; t < e; ++t) {
+                if (cls[static_cast<std::size_t>(t)] != 1) {
+                    cls[static_cast<std::size_t>(t)] = 3;
+                }
+            }
+        }
+    }
+
     segments.clear();
     const int nf = static_cast<int>(cls.size());
     int i = 0;
@@ -421,7 +476,8 @@ void BreathModel::run(const float * wav, std::size_t n, int sample_rate,
         int j = i;
         while (j < nf && cls[static_cast<std::size_t>(j)] == cls[static_cast<std::size_t>(i)]) ++j;
         const char * name = cls[static_cast<std::size_t>(i)] == 1 ? "AP"
-                          : cls[static_cast<std::size_t>(i)] == 2 ? "SP" : "V";
+                          : cls[static_cast<std::size_t>(i)] == 2 ? "SP"
+                          : cls[static_cast<std::size_t>(i)] == 3 ? "EP" : "V";
         segments.push_back(BreathSegment{name, static_cast<float>(i * inv_fps),
                                          static_cast<float>(j * inv_fps)});
         i = j;

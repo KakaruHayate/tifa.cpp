@@ -190,7 +190,7 @@ std::vector<TimedInterval> merge_breath_into_phones(
     struct Insert { double xmin, xmax; const std::string * label; };
     std::vector<Insert> inserts;
     for (const tifa_ggml::BreathSegment & s : segments) {
-        if ((s.label == "AP" || s.label == "SP") && s.end - s.start >= min_insert) {
+        if ((s.label == "AP" || s.label == "SP" || s.label == "EP") && s.end - s.start >= min_insert) {
             inserts.push_back({s.start, s.end, &s.label});
         }
     }
@@ -253,7 +253,7 @@ std::vector<TimedInterval> merge_breath_into_phones(
     // adjacent phones of any other label is not ours to decide).
     constexpr double kBreathMergeGap = 0.1;
     const auto is_breath_label = [](const std::string & text) {
-        return text == "AP" || text == "SP" || text == "br" || text == "sil"
+        return text == "AP" || text == "SP" || text == "EP" || text == "br" || text == "sil"
             || text == "pau";
     };
     std::vector<TimedInterval> deduped;

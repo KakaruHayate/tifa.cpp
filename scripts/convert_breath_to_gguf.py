@@ -368,7 +368,7 @@ def add_metadata(writer: gguf.GGUFWriter, meta: dict, gp: dict, name: str,
 
     for key in ("threshold", "median_filter_frames", "min_dur_ms", "merge_gap_ms",
                 "sp_threshold", "sp_floor_percentile", "sp_floor_margin_db",
-                "sp_hf_guard_db", "sp_min_dur_ms"):
+                "sp_hf_guard_db", "sp_min_dur_ms", "ep_threshold"):
         if key in pp:
             put(f"breath.postprocess.{key}", pp[key])
 
@@ -448,14 +448,24 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model-dir", type=pathlib.Path, required=True,
                         help="directory holding <name>.onnx + <name>.meta.json")
-    parser.add_argument("--name", required=True,
-                        help="model stem, e.g. v5_24k")
+    parser.add_argument("--name", default=None,
+                        help="model stem, e.g. model or v5_24k (default: autodetected from model-dir)")
     parser.add_argument("-o", "--output", type=pathlib.Path, required=True,
                         help="output .gguf path")
     parser.add_argument("--dtype", choices=sorted(_DTYPE_MAP), default="f32",
                         help="base dtype for the weight tensors (default: f32)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
+
+    if not args.name:
+        if (args.model_dir / "model.onnx").exists():
+            args.name = "model"
+        else:
+            candidates = list(args.model_dir.glob("*.onnx"))
+            if len(candidates) == 1:
+                args.name = candidates[0].stem
+            else:
+                parser.error("--name is required when model-dir contains multiple or no .onnx files")
 
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(levelname)s %(message)s")

@@ -107,3 +107,20 @@ TEST(BreatheMerge, VoiceSegmentsAreNeverInserted) {
     ASSERT_EQ(render(out), render(std::vector<TimedInterval>{iv(0.0, 1.0, "a")}));
     EXPECT_EQ(inserted, 0u);
 }
+
+TEST(BreatheMerge, InsertsExhaleSegmentsWhenPresent) {
+    // phone 'a' followed by silence, with an EP detected between them
+    const std::vector<TimedInterval> phones{
+        iv(0.0, 1.0, "a"), iv(1.0, 2.0, "SP")};
+    std::size_t inserted = 0;
+    const auto out = merge_breath_into_phones(
+        phones, {seg("EP", 0.9, 1.2)}, 0.05, &inserted);
+    // straddling phone boundary [0.9, 1.2] vs [0.0, 1.0]: not inside phone, but if inside SP or phone:
+    // let's test EP inside the trailing SP [1.0, 1.3]
+    const auto out2 = merge_breath_into_phones(
+        phones, {seg("EP", 1.0, 1.3)}, 0.05, &inserted);
+    ASSERT_EQ(render(out2), render(std::vector<TimedInterval>{
+        iv(0.0, 1.0, "a"), iv(1.0, 1.3, "EP"), iv(1.3, 2.0, "SP")}));
+    EXPECT_EQ(inserted, 1u);
+}
+

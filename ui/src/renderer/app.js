@@ -78,6 +78,7 @@ function settings() {
     sourceMode: document.querySelector('input[name="src-mode"]:checked').value,
     phonesMode: $('sel-phones-mode').value,
     useBreath: $('chk-breath').checked,
+    useEp: $('chk-ep').checked,
     usePass2: $('chk-pass2').checked,
   };
 }
@@ -99,6 +100,7 @@ function persist() {
     sourceMode: document.querySelector('input[name="src-mode"]:checked').value,
     phonesMode: $('sel-phones-mode').value,
     useBreath: $('chk-breath').checked,
+    useEp: $('chk-ep').checked,
     usePass2: $('chk-pass2').checked,
   });
 }
@@ -118,6 +120,7 @@ function applyConfig(cfg) {
   if (typeof cfg.exportJson === 'boolean') $('in-export-json').checked = cfg.exportJson;
   if (typeof cfg.quiet === 'boolean') $('in-quiet').checked = cfg.quiet;
   if (typeof cfg.useBreath === 'boolean') $('chk-breath').checked = cfg.useBreath;
+  if (typeof cfg.useEp === 'boolean') $('chk-ep').checked = cfg.useEp;
   if (typeof cfg.usePass2 === 'boolean') $('chk-pass2').checked = cfg.usePass2;
   if (cfg.sourceMode) {
     const r = document.querySelector(`input[name="src-mode"][value="${cfg.sourceMode}"]`);
@@ -402,6 +405,7 @@ async function runAll() {
         renderInputs();
         const args2 = ['breathe', item.path, '-m', S.breathModel, '--merge', outDir,
                        '-o', outDir, '--min-insert-ms', String(s.minInsertMs)];
+        if (s.useEp) args2.push('--ep');
         // Always state the format: the CLI now defaults to JSON on, so omitting
         // the flag would silently ignore an unchecked box.
         args2.push('--output-formats', s.exportJson ? 'textgrid,json' : 'textgrid');
@@ -518,6 +522,7 @@ function bind() {
 
   // 流程
   $('chk-breath').onchange = () => { refreshSourceUI(); persist(); };
+  $('chk-ep').onchange = () => { persist(); };
   $('chk-pass2').onchange = () => { persist(); refreshRunReady(); };
   $('btn-pick-outdir').onclick = async () => {
     const r = await api.pickOutDir($('in-outdir').value.trim());

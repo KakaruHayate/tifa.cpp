@@ -48,21 +48,28 @@ public:
     BreathModel & operator=(const BreathModel &) = delete;
 
     // AP events + the full AP/SP/V timeline for one mono waveform (any rate).
+    // When include_ep is true or ep_events is non-null, optional EP events
+    // are extracted for models with an EP head (BreathLab v6).
     void run(const float * wav, std::size_t n, int sample_rate,
              std::vector<BreathEvent> & ap_events,
-             std::vector<BreathSegment> & segments) const;
+             std::vector<BreathSegment> & segments,
+             std::vector<BreathEvent> * ep_events = nullptr,
+             bool include_ep = false) const;
 
     // ---- diagnostics -----------------------------------------------------
 
     // Window-averaged per-frame probabilities ([T] each; `sp` is empty when
-    // the model has no SP head).
+    // the model has no SP head, `ep_prob` populated when non-null and model has EP).
     void probabilities(const float * wav, std::size_t n, int sample_rate,
                        std::vector<float> & ap_prob,
-                       std::vector<float> & sp_prob) const;
+                       std::vector<float> & sp_prob,
+                       std::vector<float> * ep_prob = nullptr) const;
 
-    int         sample_rate() const noexcept;   // rate the model runs at
-    int         fps() const noexcept;           // frames per second
-    float       threshold() const noexcept;     // AP threshold from the GGUF
+    int          sample_rate() const noexcept;   // rate the model runs at
+    int          fps() const noexcept;           // frames per second
+    float        threshold() const noexcept;     // AP threshold from the GGUF
+    bool         has_ep() const noexcept;        // whether model carries an EP head
+    float        ep_threshold() const noexcept;  // EP threshold from the GGUF
     const char * backend_name() const noexcept;
 
 private:
