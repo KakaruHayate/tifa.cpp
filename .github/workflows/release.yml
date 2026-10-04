@@ -273,6 +273,12 @@ jobs:
           is published next to this archive:
             python scripts/convert_breath_to_gguf.py --model-dir models_dml --name v5_24k -o breath.gguf
 
+          Japanese: kana lyrics work out of the box; kanji lyrics need the
+          unidic-lite-dicdir.zip release asset unpacked as models/unidic/
+          (the GUI installs it with one click).
+          日语：假名歌词开箱即用；汉字歌词需将 release 的 unidic-lite-dicdir.zip
+          解压为 models/unidic/（GUI 可一键安装）。
+
           The full workflow (TIFA -> BreathLab -> 2PASS) is documented in
           docs/dataset-workflow.md.
           EOF
@@ -453,6 +459,13 @@ jobs:
              (text/G2P or existing phones), enable the breath/2PASS stages,
              then run.  Each file yields <name>.TextGrid plus
              <name>.diagnosis.json (sort by it to proof-read the worst ~10%).
+
+          Japanese: kana lyrics work out of the box.  For kanji lyrics,
+          install the Japanese dictionary with one click from the
+          environment panel (日语词典) - or unpack unidic-lite-dicdir.zip
+          from the release as models/unidic/ yourself.
+          日语：假名开箱即用；汉字歌词在顶栏"日语词典"一键安装，或将 release 的
+          unidic-lite-dicdir.zip 解压为 models/unidic/。
 
           The bundled engine is also usable from the command line:
             tifa_ggml_cli --help     (align / inspect / breathe)
