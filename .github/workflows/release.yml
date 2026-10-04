@@ -126,7 +126,9 @@ jobs:
         continue-on-error: true
         run: |
           pip download unidic-lite==1.0.8 --no-deps -d unidic_dl
-          for f in unidic_dl/unidic_lite-*.tar.gz; do
+          # pip normalises the name to unidic-lite-<ver>.tar.gz (dash) while
+          # PyPI serves unidic_lite-<ver>.tar.gz (underscore): match both.
+          for f in unidic_dl/unidic[_-]lite-*.tar.gz; do
             [ -f "$f" ] || { echo "unidic-lite sdist not found in unidic_dl/"; exit 1; }
             python scripts/package_unidic.py --sdist "$f" --out unidic-lite-dicdir.zip
           done
