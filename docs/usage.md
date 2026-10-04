@@ -16,7 +16,8 @@ tifa_ggml_cli(.exe)       对齐引擎（GUI 自动使用）
 ggml*                     引擎依赖（.dll / .so / .dylib）
 models/
   tifa-1.0-st-q4_0.gguf   对齐模型（Q4_0）
-  breath-v5-24k-f16.gguf  呼吸检测模型（BreathLab；可选阶段用）
+  breath-fbl-q4_0.gguf    呼吸/AP 检测模型（FoxBreatheLabeler，**默认**）
+  breath-v5-24k-f16.gguf  呼吸检测模型（BreathLab，备选）
   dictionaries/           发音词典（中文/粤语/日语/英语）
   cpp_pinyin/             汉语拼音引擎词典
   assets/LstmG2p-Eng.gguf 英文 OOV 推理模型
@@ -86,10 +87,15 @@ USAGE.md                  本文件
 | `-full` | F16（全精度） | 追求最高对齐质量；体积大 |
 | `-q4` | Q4_0（最小） | 体积约为 full 的一半，边界差异在实测容差内（见仓库 `docs/quant-matrix.md`） |
 
-## 呼吸模型（BreathLab）
+## 呼吸模型（AP 检测）
 
-呼吸检测用的是 **BreathLab** 模型（作者 [Xiantaidu](https://github.com/Xiantaidu)），
-输出 AP/SP/V 时间线，`breathe --merge` 把 AP/SP 折进 phones 层供 2PASS 使用。
+默认用 **FoxBreatheLabeler（FBL）**，包里是 `models/breath-fbl-q4_0.gguf`
+（精度与包一致：full 包是 `-f16`）。它直接对原始波形分帧（44.1 kHz，50 fps），
+输出 AP 概率，`breathe --merge` 把 AP 折进 phones 层供 2PASS 使用。
+
+**BreathLab**（作者 [Xiantaidu](https://github.com/Xiantaidu)）作为备选一并附带
+（`models/breath-v5-24k-f16.gguf`），它多一个 SP 头、100 fps；两者都是
+`-m` 指哪个用哪个，格式相同。
 
 发布包已附带转换好的 `models/breath-v5-24k-f16.gguf`。如果包内没有（源下载
 失败时会省略），可以自行转换——发布页同时提供源文件
@@ -133,7 +139,8 @@ tifa_ggml_cli(.exe)       the aligner engine (used by the GUI automatically)
 ggml*                     engine dependencies (.dll / .so / .dylib)
 models/
   tifa-1.0-st-q4_0.gguf   aligner weights (Q4_0)
-  breath-v5-24k-f16.gguf  BreathLab breath/AP detector (optional stages)
+  breath-fbl-q4_0.gguf    breath/AP detector (FoxBreatheLabeler, the **default**)
+  breath-v5-24k-f16.gguf  BreathLab breath/AP detector (the alternative)
   dictionaries/           pronunciation dictionaries (zh/yue/ja/en)
   cpp_pinyin/             Mandarin pinyin engine tables
   assets/LstmG2p-Eng.gguf English OOV inference model
@@ -209,11 +216,17 @@ The pipeline rationale lives in `docs/dataset-workflow.md`.
 | `-full` | F16 (full precision) | best alignment quality; larger download |
 | `-q4` | Q4_0 (smallest) | about half the size; boundary drift within the measured tolerances (`docs/quant-matrix.md`) |
 
-## Breath model (BreathLab)
+## Breath model (AP detection)
 
-Breath detection uses the **BreathLab** model by
-[Xiantaidu](https://github.com/Xiantaidu).  It emits an AP/SP/V timeline and
-`breathe --merge` folds AP/SP into the phones tier for the 2PASS stage.
+The default is **FoxBreatheLabeler (FBL)**, shipped as
+`models/breath-fbl-q4_0.gguf` (precision follows the bundle: `-f16` in the full
+one).  It frames the raw waveform itself (44.1 kHz, 50 fps) and emits AP
+probability; `breathe --merge` folds AP into the phones tier for the 2PASS
+stage.
+
+**BreathLab** (by [Xiantaidu](https://github.com/Xiantaidu)) ships alongside as
+the alternative (`models/breath-v5-24k-f16.gguf`) -- it adds an SP head and runs
+at 100 fps.  Both are selected the same way: point `-m` at the one you want.
 
 The bundles ship `models/breath-v5-24k-f16.gguf`.  When it is absent (the
 source download failed during packaging), convert it yourself from the

@@ -99,6 +99,18 @@ jobs:
         run: |
           python scripts/convert_lstm_g2p_to_gguf.py             --model-dir model_src/TIFA-1.0-ST/assets/LstmG2p-Eng             -o lstm-g2p-eng.gguf
 
+      - name: Convert the FoxBreatheLabeler AP detector (FBL)
+        # Tolerant: the checkpoint is an upstream release asset, not a repo file.
+        # Q4_0 is the one to ship (38% of F16, identical AP quality); F16 is the
+        # precision option.
+        continue-on-error: true
+        run: |
+          curl -fsSL -o fbl.zip             https://github.com/autumn-DL/FoxBreatheLabeler/releases/download/0.2/20ms.zip
+          unzip -q -o fbl.zip -d fbl_src
+          python scripts/convert_fbl_to_gguf.py --model-dir fbl_src/20ms --dtype q4_0 -o breath-fbl-q4_0.gguf
+          python scripts/convert_fbl_to_gguf.py --model-dir fbl_src/20ms --dtype f16  -o breath-fbl-f16.gguf
+          ls -la breath-fbl-*.gguf
+
       - name: Verify the two differ in size (quantization actually applied)
         run: |
           F16=$(stat -c%s tifa-1.0-st-f16.gguf)
@@ -114,6 +126,8 @@ jobs:
             tifa-1.0-st-q4_0.gguf
             lstm-g2p-eng.gguf
             breath-v5-24k-f16.gguf
+            breath-fbl-q4_0.gguf
+            breath-fbl-f16.gguf
           if-no-files-found: warn
           retention-days: 7
 
@@ -192,6 +206,9 @@ jobs:
           set -euo pipefail
           for PREC in full q4; do
             if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
+            # the breath detector follows the bundle's precision, so a q4 bundle
+            # is q4 all the way through and never carries two sets of weights
+            if [ "$PREC" = "full" ]; then FBL=breath-fbl-f16.gguf; else FBL=breath-fbl-q4_0.gguf; fi
             PKG="tifa-cli-${{ matrix.name }}-$PREC"
             mkdir -p "$PKG/models"
             cp "${{ matrix.bin }}" "$PKG/"
@@ -212,6 +229,8 @@ jobs:
             # BreathLab breath model, converted from the BreathLab source zip that
             # ships beside these bundles (absent when that download failed).
             cp breath-v5-24k-f16.gguf "$PKG/models/" 2>/dev/null || true
+            # FoxBreatheLabeler AP detector, same precision as the aligner
+            cp "$FBL" "$PKG/models/" 2>/dev/null || true
             cp docs/usage.md "$PKG/USAGE.md"
             cat > "$PKG/README.txt" <<EOF
           tifa_ggml_cli -- TIFA forced aligner (see the repository README)
@@ -224,7 +243,10 @@ jobs:
             tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
             tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -l zh -o out2
 
-          The breathe/2PASS steps need the BreathLab breath model (by Xiantaidu,
+          models/$FBL is the FoxBreatheLabeler AP detector and the default one
+          (`breathe ... -m models/$FBL --merge out -o out`).
+
+          BreathLab is the alternative (by Xiantaidu,
           https://github.com/Xiantaidu); when this bundle has no
           models/breath-*.gguf, convert it from the BreathLab source zip that
           is published next to this archive:
@@ -389,6 +411,8 @@ jobs:
           cp lstm-g2p-eng.gguf "$ROOT/models/assets/LstmG2p-Eng.gguf"
           # BreathLab breath model (absent when the source download failed).
           if [ -f breath-v5-24k-f16.gguf ]; then cp breath-v5-24k-f16.gguf "$ROOT/models/"; fi
+          # this bundle carries the Q4_0 aligner, so the detector matches it
+          if [ -f breath-fbl-q4_0.gguf ]; then cp breath-fbl-q4_0.gguf "$ROOT/models/"; fi
 
           cp docs/usage.md "$ROOT/USAGE.md"
           cat > "$ROOT/README.txt" <<'EOF'
@@ -398,9 +422,11 @@ jobs:
              macOS: open "TIFA Label.app", right-click > Open the first time).
           2. The engine and models sit beside the app and are imported
              automatically - no setup.  Aligner: models/tifa-1.0-st-q4_0.gguf,
-             breath: models/breath-v5-24k-f16.gguf (a BreathLab model by
-             Xiantaidu, https://github.com/Xiantaidu; if it is missing, convert
-             it from the source zip published beside this archive with
+             breath: models/breath-fbl-q4_0.gguf (the default FoxBreatheLabeler
+             detector when present). BreathLab is the alternative:
+             models/breath-v5-24k-f16.gguf (a BreathLab model by Xiantaidu,
+             https://github.com/Xiantaidu; if it is missing, convert it from
+             the source zip published beside this archive with
              scripts/convert_breath_to_gguf.py).
           3. Import audio files or a folder, choose the annotation source
              (text/G2P or existing phones), enable the breath/2PASS stages,
