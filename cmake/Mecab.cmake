@@ -43,6 +43,23 @@ if(NOT mecab_POPULATED)
     FetchContent_Populate(mecab)
 endif()
 
+# Self-heal a stale fetch: a tree patched by an OLDER mecab-portability.patch
+# makes the current patch fail both the forward and the reverse check (the
+# restored CI cache does exactly this after a patch update).  Detect the half
+# patched state -- MECAB_STATIC_LIB present (some patch applied) while darts.h
+# still carries `register` (not the current patch) -- and re-fetch.
+if(mecab_SOURCE_DIR)
+    file(STRINGS "${mecab_SOURCE_DIR}/mecab/src/mecab.h" _mecab_old_patch
+         REGEX "MECAB_STATIC_LIB")
+    file(STRINGS "${mecab_SOURCE_DIR}/mecab/src/darts.h" _mecab_register
+         REGEX "register ")
+    if(NOT _mecab_old_patch STREQUAL "" AND NOT _mecab_register STREQUAL "")
+        message(STATUS "MeCab source tree carries an outdated patch; re-fetching")
+        file(REMOVE_RECURSE "${mecab_SOURCE_DIR}" "${mecab_BINARY_DIR}")
+        FetchContent_Populate(mecab)
+    endif()
+endif()
+
 # Patches live OUTSIDE the populate guard (same reasoning as ggml above: a
 # re-populate silently replaces the patched sources; the helper is idempotent).
 tifa_ggml_apply_patch(
