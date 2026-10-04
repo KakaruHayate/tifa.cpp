@@ -1386,10 +1386,23 @@ Pipeline Pipeline::from_config(const std::string & g2p_json, const std::string &
                 if (cantonese) tags = { "yue" };
                 impl.converters.push_back(std::make_unique<ChineseConverter>(
                     languages_of(std::move(tags)), dict_path, engine_dir));
-            } else if (id == "japanese-kana") {
+            } else if (id == "japanese-kana" || id == "japanese-mecab") {
+                // The stock TIFA config declares `japanese-mecab`, which needs
+                // MeCab + UniDic and cannot be carried in this build.  Kana
+                // lyrics do not need a morphological analyzer, so the kana
+                // converter serves that id too -- otherwise nothing registers a
+                // Japanese converter and `-l ja` fails on kana as well as kanji.
+                // Kanji still needs a real MeCab: it cannot be segmented here,
+                // and falls through to per-character phonemes.
+                if (id == "japanese-mecab") {
+                    warn("converter 'japanese-mecab' needs MeCab + UniDic, which this "
+                         "build cannot carry; serving kana with the kana converter. "
+                         "Kanji lyrics need a kana transcription first (or a config "
+                         "declaring 'japanese-kana' and kana input)");
+                }
                 const std::string dict_path = kwarg_path("dict_path");
                 if (dict_path.empty()) {
-                    throw InvalidArgument("converter 'japanese-kana' requires a 'dict_path' kwarg");
+                    throw InvalidArgument("converter '" + id + "' requires a 'dict_path' kwarg");
                 }
                 bool sokuon = false;
                 if (kwargs != nullptr) {

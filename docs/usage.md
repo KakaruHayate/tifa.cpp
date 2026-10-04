@@ -113,6 +113,10 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 - **没有独立显卡 / 想强制 CPU**：`--backend cpu`（GUI 在高级选项里）。
 - **词典找不到**：词典以文件形式放在模型目录旁（`models/dictionaries/`）。
   换用自己的模型目录时，把 `dictionaries/`、`cpp_pinyin/`、`assets/` 一起放过去。
+- **日文**：stock 模型的 config 声明的是 `japanese-mecab`（需要 MeCab + UniDic，
+  本构建带不了），现在这个 id 由 kana 转换器服务，所以**假名歌词（平假名/片假名）
+  可以直接用 `-l ja`**。**汉字歌词不行**——汉字需要真正的形态分析来切分并注音，
+  请先转成假名（或罗马音，词典是罗马音键控的）。
 - **PFML**：文本里可以写 `<word phonemes="zh ong">重</word>`（直接给音素，
   不经词典）或 `<scope language="ja">東京</scope>`（指定语言区间）。按 PFML 1.0
   解析：支持完整 `<reading>/<path>/<group>` 树、注释 `<!-- -->` 与 CDATA；
@@ -246,6 +250,12 @@ python scripts/convert_breath_to_gguf.py --model-dir models_dml/models_dml --nam
 - **Dictionaries not found**: they are files beside the model directory
   (`models/dictionaries/`).  When using your own model directory, copy
   `dictionaries/`, `cpp_pinyin/` and `assets/` along with it.
+- **Japanese**: the stock model's config declares `japanese-mecab`, which needs
+  MeCab + UniDic and cannot be carried in this build.  That id is now served by
+  the kana converter, so **kana lyrics work with `-l ja` out of the box**.
+  **Kanji lyrics do not** -- segmenting and reading kanji needs a real
+  morphological analyzer; give a kana (or romaji, the dictionary is romaji-keyed)
+  transcription first.
 - **PFML**: transcripts may embed final phonemes directly
   (`<word phonemes="zh ong">重</word>`) or language scopes
   (`<scope language="ja">東京</scope>`).  Parsing follows PFML 1.0: full
