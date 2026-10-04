@@ -346,13 +346,13 @@ function registerIpc() {
     });
     if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
     for (const f of r.filePaths) allowRoot(path.dirname(f));
-    return { ok: true, ...buildInputs(r.filePaths) };
+    return { ok: true, paths: r.filePaths, ...buildInputs(r.filePaths) };
   });
   handle('inputs:pick-folder', async () => {
     const r = await dialog.showOpenDialog({ title: 'Add a folder (recursive)', properties: ['openDirectory'] });
     if (r.canceled || !r.filePaths.length) return { ok: false, canceled: true };
     for (const d of r.filePaths) allowRoot(d);
-    return { ok: true, ...buildInputs(r.filePaths) };
+    return { ok: true, paths: r.filePaths, ...buildInputs(r.filePaths) };
   });
   handle('inputs:scan', (e, paths) => {
     const list = Array.isArray(paths) ? paths : [paths];
