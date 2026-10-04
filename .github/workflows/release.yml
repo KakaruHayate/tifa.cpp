@@ -206,6 +206,9 @@ jobs:
           set -euo pipefail
           for PREC in full q4; do
             if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
+            # the breath detector follows the bundle's precision, so a q4 bundle
+            # is q4 all the way through and never carries two sets of weights
+            if [ "$PREC" = "full" ]; then FBL=breath-fbl-f16.gguf; else FBL=breath-fbl-q4_0.gguf; fi
             PKG="tifa-cli-${{ matrix.name }}-$PREC"
             mkdir -p "$PKG/models"
             cp "${{ matrix.bin }}" "$PKG/"
@@ -226,9 +229,8 @@ jobs:
             # BreathLab breath model, converted from the BreathLab source zip that
             # ships beside these bundles (absent when that download failed).
             cp breath-v5-24k-f16.gguf "$PKG/models/" 2>/dev/null || true
-            # FoxBreatheLabeler: the default AP detector (q4_0), F16 alongside
-            cp breath-fbl-q4_0.gguf "$PKG/models/" 2>/dev/null || true
-            cp breath-fbl-f16.gguf  "$PKG/models/" 2>/dev/null || true
+            # FoxBreatheLabeler AP detector, same precision as the aligner
+            cp "$FBL" "$PKG/models/" 2>/dev/null || true
             cp docs/usage.md "$PKG/USAGE.md"
             cat > "$PKG/README.txt" <<EOF
           tifa_ggml_cli -- TIFA forced aligner (see the repository README)
@@ -241,7 +243,11 @@ jobs:
             tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
             tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -l zh -o out2
 
-          The breathe/2PASS steps need the BreathLab breath model (by Xiantaidu,
+          models/breath-fbl-*.gguf is the FoxBreatheLabeler AP detector and the
+          recommended one (`breathe ... -m models/breath-fbl-q4_0.gguf`); it
+          matches this bundle's precision.
+
+          The breathe/2PASS steps also accept the BreathLab breath model (by Xiantaidu,
           https://github.com/Xiantaidu); when this bundle has no
           models/breath-*.gguf, convert it from the BreathLab source zip that
           is published next to this archive:
@@ -406,8 +412,8 @@ jobs:
           cp lstm-g2p-eng.gguf "$ROOT/models/assets/LstmG2p-Eng.gguf"
           # BreathLab breath model (absent when the source download failed).
           if [ -f breath-v5-24k-f16.gguf ]; then cp breath-v5-24k-f16.gguf "$ROOT/models/"; fi
+          # this bundle carries the Q4_0 aligner, so the detector matches it
           if [ -f breath-fbl-q4_0.gguf ]; then cp breath-fbl-q4_0.gguf "$ROOT/models/"; fi
-          if [ -f breath-fbl-f16.gguf ];  then cp breath-fbl-f16.gguf  "$ROOT/models/"; fi
 
           cp docs/usage.md "$ROOT/USAGE.md"
           cat > "$ROOT/README.txt" <<'EOF'
