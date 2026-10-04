@@ -99,6 +99,18 @@ jobs:
         run: |
           python scripts/convert_lstm_g2p_to_gguf.py             --model-dir model_src/TIFA-1.0-ST/assets/LstmG2p-Eng             -o lstm-g2p-eng.gguf
 
+      - name: Convert the FoxBreatheLabeler AP detector (FBL)
+        # Tolerant: the checkpoint is an upstream release asset, not a repo file.
+        # Q4_0 is the one to ship (38% of F16, identical AP quality); F16 is the
+        # precision option.
+        continue-on-error: true
+        run: |
+          curl -fsSL -o fbl.zip             https://github.com/autumn-DL/FoxBreatheLabeler/releases/download/0.2/20ms.zip
+          unzip -q -o fbl.zip -d fbl_src
+          python scripts/convert_fbl_to_gguf.py --model-dir fbl_src/20ms --dtype q4_0 -o breath-fbl-q4_0.gguf
+          python scripts/convert_fbl_to_gguf.py --model-dir fbl_src/20ms --dtype f16  -o breath-fbl-f16.gguf
+          ls -la breath-fbl-*.gguf
+
       - name: Verify the two differ in size (quantization actually applied)
         run: |
           F16=$(stat -c%s tifa-1.0-st-f16.gguf)
@@ -114,6 +126,8 @@ jobs:
             tifa-1.0-st-q4_0.gguf
             lstm-g2p-eng.gguf
             breath-v5-24k-f16.gguf
+            breath-fbl-q4_0.gguf
+            breath-fbl-f16.gguf
           if-no-files-found: warn
           retention-days: 7
 
@@ -212,6 +226,9 @@ jobs:
             # BreathLab breath model, converted from the BreathLab source zip that
             # ships beside these bundles (absent when that download failed).
             cp breath-v5-24k-f16.gguf "$PKG/models/" 2>/dev/null || true
+            # FoxBreatheLabeler: the default AP detector (q4_0), F16 alongside
+            cp breath-fbl-q4_0.gguf "$PKG/models/" 2>/dev/null || true
+            cp breath-fbl-f16.gguf  "$PKG/models/" 2>/dev/null || true
             cp docs/usage.md "$PKG/USAGE.md"
             cat > "$PKG/README.txt" <<EOF
           tifa_ggml_cli -- TIFA forced aligner (see the repository README)
@@ -389,6 +406,8 @@ jobs:
           cp lstm-g2p-eng.gguf "$ROOT/models/assets/LstmG2p-Eng.gguf"
           # BreathLab breath model (absent when the source download failed).
           if [ -f breath-v5-24k-f16.gguf ]; then cp breath-v5-24k-f16.gguf "$ROOT/models/"; fi
+          if [ -f breath-fbl-q4_0.gguf ]; then cp breath-fbl-q4_0.gguf "$ROOT/models/"; fi
+          if [ -f breath-fbl-f16.gguf ];  then cp breath-fbl-f16.gguf  "$ROOT/models/"; fi
 
           cp docs/usage.md "$ROOT/USAGE.md"
           cat > "$ROOT/README.txt" <<'EOF'
