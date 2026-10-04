@@ -79,7 +79,7 @@ def main() -> int:
     ap.add_argument("--config")
     ap.add_argument("-o", "--output", required=True)
     ap.add_argument("--name", default="breath-fbl")
-    ap.add_argument("--dtype", choices=["f16", "f32"], default="f16")
+    ap.add_argument("--dtype", choices=["f16", "f32", "q8_0", "q4_0"], default="f16")
     ap.add_argument("--ap-threshold", type=float, default=0.4,
                     help="AP probability threshold (textgrid_add_ap.py default)")
     ap.add_argument("--ap-dur", type=float, default=0.08,
@@ -169,16 +169,29 @@ def main() -> int:
     writer.add_int32("fbl.min_dur_frames", min_frames)
     writer.add_int32("fbl.max_gap", int(args.max_gap))
 
-    qtype = (gguf.GGMLQuantizationType.F16 if args.dtype == "f16"
-             else gguf.GGMLQuantizationType.F32)
-    total = f16 = 0
+    dtype_map = {
+        "f32": gguf.GGMLQuantizationType.F32,
+        "f16": gguf.GGMLQuantizationType.F16,
+        "q8_0": gguf.GGMLQuantizationType.Q8_0,
+        "q4_0": gguf.GGMLQuantizationType.Q4_0,
+    }
+    block = {gguf.GGMLQuantizationType.Q8_0: 32, gguf.GGMLQuantizationType.Q4_0: 32}
+    qtype = dtype_map[args.dtype]
+
+    total = quantized = 0
     for key in sorted(weights):
-        arr = np.ascontiguousarray(weights[key])
+        arr = np.ascontiguousarray(weights[key], dtype=np.float32)
         eff = gguf.GGMLQuantizationType.F32
-        if qtype == gguf.GGMLQuantizationType.F16 and not f32_only(key):
-            arr = arr.astype(np.float16)
-            eff = gguf.GGMLQuantizationType.F16
-            f16 += 1
+        if qtype != gguf.GGMLQuantizationType.F32 and not f32_only(key):
+            if qtype == gguf.GGMLQuantizationType.F16:
+                arr, eff = arr.astype(np.float16), qtype
+                quantized += 1
+            elif arr.ndim == 2 and arr.shape[-1] % block[qtype] == 0:
+                # only the 2-D matmul weights are worth quantizing
+                arr, eff = gguf.quants.quantize(arr, qtype), qtype
+                quantized += 1
+            else:
+                arr, eff = arr.astype(np.float16), gguf.GGMLQuantizationType.F16
         writer.add_tensor(key, arr, raw_dtype=eff)
         total += arr.nbytes
     writer.write_header_to_file()
@@ -186,8 +199,8 @@ def main() -> int:
     writer.write_tensors_to_file()
     writer.close()
 
-    log.info("wrote %s: %d tensors (%d f16), %.1f MB",
-             args.output, len(weights), f16, total / 1e6)
+    log.info("wrote %s: %d tensors (%d quantized), %.1f MB",
+             args.output, len(weights), quantized, total / 1e6)
     log.info("dim=%d layers=%d heads=%dx%d kernel=%d spec_win=%d hop=%d sr=%d fps=%.0f",
              dim, layers, heads, head_dim, kernel, spec_win, hop, sr, fps)
     log.info("threshold=%.2f min_dur=%d frames max_gap=%d frames",
