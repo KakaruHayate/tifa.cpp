@@ -133,7 +133,7 @@ eq('bad json -> null', P.parseDiagnosis('{nope'), null);
 
 // --- 4b. align summary line -------------------------------------------------
 console.log('[4b] parseAlignSummary');
-const SUM = 'hanser_0_0                                 870 frames    48 phones    211.0 ms  agreement 1.000' + String.fromCharCode(10);
+const SUM = 'sample_0_0                                 870 frames    48 phones    211.0 ms  agreement 1.000' + String.fromCharCode(10);
 const sum = P.parseAlignSummary(SUM);
 check('parses', !!sum, sum);
 eq('fields', [sum.frames, sum.phones, sum.ms, sum.agreement], [870, 48, 211.0, 1.0]);

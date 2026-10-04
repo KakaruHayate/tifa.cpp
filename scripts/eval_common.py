@@ -1,4 +1,4 @@
-"""Benchmark harness for breath/AP/SP detectors against the hanser dataset.
+"""Benchmark harness for breath/AP/SP detectors against a labelled dataset.
 
 Ground truth comes from each dataset TextGrid's `phones` tier: intervals
 labelled AP or SP are the positives, everything else is lexical (V).  The

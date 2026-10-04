@@ -1,9 +1,9 @@
-"""Score a converted FoxBreatheLabeler GGUF against the hanser ground truth.
+"""Score a converted FoxBreatheLabeler GGUF against a TextGrid ground truth.
 
-Reads the GGUF (dequantising whatever dtype it holds), loads the weights into the
-reference torch model, and runs the same AP decoding the CLI uses -- so the
-number this prints is the AP quality the shipped weights would produce, without
-needing the C++ integration first.
+Takes a directory of wav/TextGrid pairs, reads the GGUF (dequantising whatever
+dtype it holds), loads the weights into the reference torch model, and runs the
+same AP decoding the CLI uses -- so the number this prints is the AP quality the
+shipped weights would produce, without needing the C++ integration first.
 
 The BatchNorm the converter folds to scale/shift is reconstructed as a
 BatchNorm1d with mean 0 and var 1-eps, which makes its eval-time transform
@@ -120,7 +120,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--gguf", required=True)
     ap.add_argument("--tag", required=True)
-    ap.add_argument("--config", default="J:/tifacpp/fbl/src/oVFBL.yaml")
+    ap.add_argument("--config", required=True,
+                    help="the FBL config.yaml the checkpoint was trained with")
+    ap.add_argument("--wavs", required=True,
+                    help="directory of *.wav with a sibling *.TextGrid ground truth")
+    ap.add_argument("--out", default=None,
+                    help="where to write the score JSON (default: out_<tag>.json)")
     ap.add_argument("--limit", type=int, default=200)
     ap.add_argument("--threshold", type=float, default=0.4)
     args = ap.parse_args()
@@ -129,7 +134,7 @@ def main():
     model, _ = load_model(args.gguf, args.config)
     print(f"[{args.tag}] {size:.1f} MB, threshold={args.threshold}")
 
-    wav_dir = pathlib.Path("J:/tifacpp/ZH_hanser_dataset_fix/wavs")
+    wav_dir = pathlib.Path(args.wavs)
     wavs = sorted(wav_dir.glob("*.wav"))[: args.limit]
     acc = {}
     t0 = time.time()
@@ -158,8 +163,8 @@ def main():
     print(f"[{args.tag}] files={n_ok} wall={time.time() - t0:.0f}s")
     print(f"     frame: {S.fmt(acc['frame'])}")
     print(f"     event: {S.fmt(acc['event'])}")
-    S.dump(f"J:/tifacpp/bench/out_quant_{args.tag}.json",
-           {"tag": args.tag, "mb": size, "files": n_ok, **acc})
+    out = args.out or f"out_quant_{args.tag}.json"
+    S.dump(out, {"tag": args.tag, "mb": size, "files": n_ok, **acc})
 
 
 if __name__ == "__main__":

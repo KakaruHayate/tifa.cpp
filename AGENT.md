@@ -123,7 +123,7 @@ order), `spans` **exactly equal**.
 - Measured on an RTX 2070, one 8.7 s clip: CPU F32 ≈ 5.7 s, CPU F16 ≈ 2.9 s,
   Vulkan F16 ≈ 0.19 s.
 
-## 10. Session-2026-10-01 invariants（新增，勿踩）
+## 10. Invariants learned during the port（勿踩）
 
 - **深度卷积 direct 门控必须设置**：`Model::load` 里按后端名调用
   `ops::set_direct_dwconv(...)`（CPU/Vulkan/CUDA/Metal → true）。忘了它 =
