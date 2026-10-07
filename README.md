@@ -1,3 +1,5 @@
+# 据说字音识别和原版差异较大，使用还请谨慎，目前尚未解决
+
 # tifa.cpp — TIFA (Token-Imputing Forced Aligner) on ggml
 
 Native C++ inference for [openvpi/TIFA](https://github.com/openvpi/TIFA), the
