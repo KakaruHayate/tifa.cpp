@@ -7,7 +7,7 @@ phone sequence from `transcriptions.csv` -> TextGrid — so the numbers include
 the audio decode + resample + mel front end, exactly like a real dataset run.
 
 Usage:
-    python benchmark_efficiency.py --cli ../tifa.cpp/build/bin/tifa_ggml_cli.exe \
+    python benchmark_efficiency.py --cli ../tifa.cpp/build/bin/tifa.exe \
         --dataset ../../dataset --limit 20 \
         --model ../models/tifa-1.0-st-f16.gguf --model-cpu ../models/tifa-1.0-st-q4_0.gguf \
         --report ../docs/benchmark-efficiency.md

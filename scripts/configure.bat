@@ -3,7 +3,7 @@ call "%~dp0vcvars.bat"
 echo VCVARS=%ERRORLEVEL%
 if errorlevel 1 exit /b 1
 cd /d "%~dp0.."
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTIFA_GGML_VULKAN=ON -DTIFA_GGML_BUILD_CLI=ON -DTIFA_GGML_BUILD_TESTS=OFF -Wno-dev
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTIFA_GGML_VULKAN=ON -DTIFA_GGML_BUILD_CLI=ON -DTIFA_GGML_BUILD_TESTS=OFF
 echo CMRC=%ERRORLEVEL%
 rem Tests build (GoogleTest via FetchContent):
 rem   cmake -B build-tests -G Ninja -DCMAKE_BUILD_TYPE=Release -DTIFA_GGML_BUILD_TESTS=ON

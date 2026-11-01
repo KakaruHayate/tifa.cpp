@@ -4,6 +4,11 @@ Read this before touching the build system, the ggml dependency, or the
 network graph.  Everything here was learned the hard way during the port; each
 item has cost hours at least once already.
 
+> 0.2.0 removed G2P/PFML, breath detection and the Electron UI.  The old tree
+> is on the `archive/main-v0.1.6` branch; the rationale is in
+> `docs/scope-change.md`.  Do not resurrect those subsystems here — the engine
+> contract is audio + phones + language.
+
 ---
 
 ## 1. ggml version gate — stay on v0.19.0
@@ -21,8 +26,6 @@ disk-backed pipeline cache).  Like the sibling `game.cpp` port:
 
 Do not bump the tag without refactoring `backend.cpp` to load the CPU backend
 through the DL registry, and re-run the parity suite afterwards.
-
----
 
 ## 2. Arena aliasing: **inputs are re-uploaded before every compute**
 
@@ -73,7 +76,7 @@ decoded spans.  Use `ggml_gelu_erf` everywhere (`src/ops_ffn.cpp`).
 
 Because padding enters attention, **batch size is part of the numerics**:
 reference goldens must be produced with PyTorch `batch_size=1` (which is what
-`tifa_ggml_cli` implements: exact-length, unpadded).
+`tifa` implements: exact-length, unpadded).
 
 ## 6. GGUF dtype policy
 
@@ -103,7 +106,7 @@ python scripts/dump_tifa_reference.py \
     --tifa-root ../refs/TIFA --model-dir ../models/TIFA-1.0-ST \
     --audio sample48k.wav --phones "AP zh e n" -l zh --out-dir golden/ref
 
-TIFA_GGML_DUMP_LAYERS=1 TIFA_GGML_BACKEND=cpu build/bin/tifa_ggml_cli.exe \
+TIFA_GGML_DUMP_LAYERS=1 TIFA_GGML_BACKEND=cpu build/bin/tifa.exe \
     align sample48k.wav -m ../models/tifa-1.0-st-f32.gguf \
     --phones "AP zh e n" -l zh -o out --dump-dir golden/cpp
 
@@ -129,63 +132,48 @@ order), `spans` **exactly equal**.
   `ops::set_direct_dwconv(...)`（CPU/Vulkan/CUDA/Metal → true）。忘了它 =
   CgMLP 走 im2col，CPU 慢 4.4×（2.96 s → 0.67 s/8.7 s clip）。新加模型加载
   路径时照抄 `model_tifa.cpp` 的闸门。
-- **LSTM 解码器的 `in_h` 必须用独立 buffer**
-  （`lstm_g2p.cpp::GraphRun::allocate_inputs`）：同一张图被反复 compute、
-  每次重传状态，而 gallocr 曾把它的区间复用给 `out_logits`，第二步读到的
-  就是被覆盖的状态。**不要把这条推广到所有图输入** —— TIFA 主模型的输入
-  （`in_mel`/`in_tokens`/mask/位置）按 §2 建在状态图的 context 里、每次
-  compute 前重传即可（golden 验证过的路径）。判断依据是"同一张图是否会被
-  反复 compute 且输入区间可能被后续节点写回"，而不是"输入"这个身份本身。
-- **breath 的 taps 需要 `ggml_cpy` 复制**（AGENT.md §3）。
 - **mid-graph 调试读回先 cpy**：直接读中间节点是活内存，结果随机
   （tifa 词正确、test 词乱码的那类诡异现象即此）。
-- **PFML 是文本入口的一部分**：`build_text_request` 先 `looks_like_pfml`
-  再分流；`<word phonemes=...>` 直出音素，不经词典/预处理器（注意：普通
-  文本会先 lowercase，直接音素不要放普通文本里）。
-- **发布包布局**：`models/{tifa.gguf, dictionaries/, cpp_pinyin/, assets/LstmG2p-Eng.gguf}`。
-  GGUF 里 `@dictionaries/...`、`@assets/...` 相对模型目录解析，平铺即失效。
-  可选 `models/unidic/`（MeCab/UniDic 词典，日语汉字用）不进 bundle：作为
-  `unidic-lite-dicdir.zip` release 资产单独发布，`find_unidic_dir` 探测
-  `<dict_dir>/unidic`（哨兵 `sys.dic`），缺词典时 japanese-mecab 回退假名。
-- **发布包必须在打包处"就地跑一次"**：workflow 组装完 bundle 后，
-  `cd` 进 bundle 目录执行 `./tifa_ggml_cli --version` 与
-  `inspect models/tifa.gguf`，失败即 fail job。教训：2026-10-01 的 GUI 包
-  里 `tifa_ggml_cli.exe` 是 MinGW 链接的（`libgcc_s_seh-1.dll`/
+- **发布包布局**：`models/tifa.gguf` 与 `tifa(.exe)`、`ggml*` 运行库、`USAGE.md`
+  平铺在一个目录。0.2.0 起没有词典、`assets/` 或呼吸模型。
+- **发布包必须在打包处“就地跑一次”**：workflow 组装完 bundle 后，
+  `cd` 进 bundle 目录执行 `./tifa --version` 与
+  `inspect models/tifa.gguf`，失败即 fail job。教训：2026-10-01 的包里
+  `tifa_ggml_cli.exe` 是 MinGW 链接的（`libgcc_s_seh-1.dll`/
   `libstdc++-6.dll`/`libwinpthread-1.dll`/`libgomp-1.dll`），而这些 DLL
   没随包发布 —— 在干净 Windows 上直接加载失败、**零输出退出**。构建树里跑
-  得好好的，所以只有"在打包产物里跑"才暴露得出来。
+  得好好的，所以只有“在打包产物里跑”才暴露得出来。
 - **Windows 构建不要写 `-G Ninja`**：runner 的 PATH 上有 Strawberry Perl 的
   gcc，Ninja 会优先选它 → MinGW 工具链。留空让 CMake 用默认的 Visual Studio
-  生成器（MSVC）。GUI 包与 CLI 包两个 job 必须用同一套工具链。
+  生成器（MSVC）。
 - **`CMAKE_BUILD_RPATH_USE_ORIGIN ON` 不能删**：发布包是把 `build/bin/*`
   整体拷贝出去的，绝对 RPATH 会让 Linux/macOS 包在用户机上找不到
   `libggml*.so`/`.dylib`。Windows 无此问题（先搜 exe 所在目录）。
 - **MSVC 必须用 `/EHs`，不能用 CMake 默认的 `/EHsc`**（CMakeLists 顶部有
-  `string(REPLACE "/EHsc" "/EHs" ...)`）：`/EHsc` 的 `c` = "假定 `extern "C"`
-  的函数不会抛异常"，而 ggml 整个 API 都是 `extern "C"`。于是编译器把
+  `string(REPLACE "/EHsc" "/EHs" ...)`）：`/EHsc` 的 `c` = “假定 `extern "C"`
+  的函数不会抛异常”，而 ggml 整个 API 都是 `extern "C"`。于是编译器把
   `init_backend()` 里包着 `ggml_backend_vk_init` 的 try/catch **整个删掉**，
   Vulkan 初始化抛出的 `vk::SystemError` 直接穿到 `main()` —— 结果是进程直接
   死掉，而不是回退 CPU。触发条件很常见：机器上装了 Vulkan loader（Electron
   包自带 `vulkan-1.dll`）但没有可用 ICD。症状是 `error: vk::createInstance:
   ErrorIncompatibleDriver` 且**没有** "vulkan backend init failed" 那行。
-  验证方法：`VK_ICD_FILENAMES=C:/nonexistent.json tifa_ggml_cli inspect <模型>`
+  验证方法：`VK_ICD_FILENAMES=C:/nonexistent.json tifa inspect <模型>`
   应当回退到 CPU 并成功。
 - **MSVC 运行时 DLL 必须随包**（CMakeLists 里 `InstallRequiredSystemLibraries`
   把 `msvcp140*.dll`/`vcruntime140*.dll` 拷进 `build/bin`）：引擎是 `/MD`，
-  干净 Windows 上没有这些 DLL 就起不来；Electron 自己是静态 CRT，不会顺带
-  装上 VC++ 运行时。删掉这段 = 包在装了 redist 的机器上测没事、在干净机器上
-  直接打不开。
+  干净 Windows 上没有这些 DLL 就起不来。
+- **发布构建必须 `GGML_NATIVE=OFF`**：托管 runner 有 AVX-512，native 构建会把
+  AVX-512 指令直接编进 `ggml-cpu`；在 Haswell 这类没有 AVX-512 的机器上，
+  CPU 推理一启动就是 `STATUS_ILLEGAL_INSTRUCTION`（0xC000001D）。0.2.0 首发
+  踩过这个坑。CI 测试可以 native（只在本 runner 跑），但 release/cuda 产物必须
+  portable。验证方法：下载 release 包，用 `--backend cpu` 跑一次 align，不能只
+  跑 `--version` / `inspect`（后者不执行 CPU 计算）。
 - **发布流程**：推 `v*` tag → `release.yml` 自动发正式版（`prerelease: false`，
   手动 dispatch 才走 `edge`）。`cuda.yml` 同样被 tag 触发，但**不在 release
   流程里**：正式版不等 CUDA，CUDA 跑完（约 2 小时）由它自己把
-  `tifa-cuda-<平台>-{full,q4}.tar.gz` 补挂到同一个 release 上。CUDA job 的模型
-  是从目标 release 的 run 里取 `tifa-models` artifact 复用的，取不到就退回只含
-  引擎的包——所以它永远不会拖累或破坏正式版。要重跑 CUDA 而不重新打 tag：
-  `gh workflow run cuda.yml -f release_tag=v0.1.1`（这个输入同时决定模型来源和
-  补挂目标）。矩阵名 `linux-x64-cuda` 已含 `cuda`，拼产物名时先剥掉后缀，
-  否则会出现 `tifa-cuda-linux-x64-cuda-full` 这种重名。
-- **UI 层**：Electron 顶层脚本里不要 `const bridge = window.bridge`
-  （contextBridge 属性不可配置，重复声明直接 SyntaxError）；渲染层 API 挂在
-  `window.TifaLabel` 供 e2e 驱动（脚本级 const 对 executeJavaScript 不可见）。
-- **LSTM 算子**：`GGML_OP_LSTM`（`cmake/patches/ggml-lstm-op.md`）CPU-only，
-  GPU 后端 decline 后调度器自动放回 CPU；新增后端 kernel 前不要改调度假设。
+  `tifa-cuda-<平台>-{full,q4}.tar.gz` 补挂到同一个 release 上。要重跑 CUDA
+  而不重新打 tag：`gh workflow run cuda.yml -f release_tag=v0.2.0`。
+  矩阵名 `linux-x64-cuda` 已含 `cuda`，拼产物名时先剥掉后缀。
+- **版本/范围**：0.2.0 是破坏性范围变更（G2P/breath/UI 移除，CLI 改名
+  `tifa`）；旧的 `v0.1.6` 代码在 `archive/main-v0.1.6` 分支上。改 README、
+  usage、release 资产名时保持三者一致。

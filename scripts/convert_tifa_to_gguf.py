@@ -14,7 +14,7 @@ Output:
       * architecture metadata         (general.architecture = "tifa-fa")
       * model / backbone hyperparams  (tifa.model.*, tifa.backbone.*)
       * feature + inference metadata  (tifa.features.*, tifa.inference.*)
-      * the vocabulary, G2P config and global/stop symbols, packed as JSON
+      * the vocabulary and global/stop symbols, packed as JSON
         (tifa.vocab.json)
       * every parameter tensor, keyed by its PyTorch module path with the
         training `model.` prefix stripped (e.g. backbone.layers.0.attn.jattn.token_qkv.weight)
@@ -264,12 +264,13 @@ def add_metadata(writer: gguf.GGUFWriter, cfg: dict[str, Any], model_dir: pathli
         stops = vcfg.get("stop_symbols", stops)
         merged = vcfg.get("merged_groups", merged)
 
+    # The engine only needs the vocabulary; the upstream G2P pipeline config is
+    # deliberately not embedded (text-to-phoneme is out of scope).
     packed = {
         "symbols": vocab["symbols"],
         "global_symbols": globals_,
         "stop_symbols": stops,
         "merged_groups": merged,
-        "g2p": g2p,
     }
     writer.add_string("tifa.vocab.json", json.dumps(packed, ensure_ascii=False, separators=(",", ":")))
 

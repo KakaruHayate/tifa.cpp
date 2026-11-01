@@ -10,7 +10,7 @@ and finally writes a markdown matrix so the size/accuracy trade-off is explicit.
 
 Usage:
     python quant_matrix.py --model-dir ../models/TIFA-1.0-ST \
-        --cli ../tifa.cpp/build/bin/tifa_ggml_cli.exe \
+        --cli ../tifa.cpp/build/bin/tifa.exe \
         --dataset ../../dataset --limit 40 \
         --backend cpu --out-dir ../eval/quant
 

@@ -1,8 +1,7 @@
 # ----------------------------------------------------------------------------
 # Helper: apply a git patch once; idempotent across re-configures.
-# Extracted from Dependencies.cmake so non-ggml dependencies (MeCab) can
-# reuse it in builds where Dependencies.cmake is skipped entirely
-# (TIFA_GGML_BUILD_MODEL=OFF).
+# Extracted from Dependencies.cmake so non-ggml dependencies can reuse it in
+# builds where Dependencies.cmake is skipped entirely.
 # ----------------------------------------------------------------------------
 include_guard(GLOBAL)
 

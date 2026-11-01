@@ -7,10 +7,10 @@
 #define TIFA_GGML_VERSION_MAJOR 0
 #endif
 #ifndef TIFA_GGML_VERSION_MINOR
-#define TIFA_GGML_VERSION_MINOR 1
+#define TIFA_GGML_VERSION_MINOR 2
 #endif
 #ifndef TIFA_GGML_VERSION_PATCH
-#define TIFA_GGML_VERSION_PATCH 6
+#define TIFA_GGML_VERSION_PATCH 0
 #endif
 
 namespace tifa_ggml {

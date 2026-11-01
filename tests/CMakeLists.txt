@@ -12,19 +12,7 @@ add_executable(tifa_ggml_tests
     support/reference_io.cpp
     test_backend.cpp
     test_decode.cpp
-    test_g2p_lstm.cpp
-    test_g2p_pfml.cpp
-    test_g2p_japanese.cpp
-    test_breathe_merge.cpp
-    test_fbl_net.cpp
     test_textgrid.cpp
-    # the 2PASS merge lives with the CLI's format readers; compiling the unit
-    # in keeps the test off the CLI executable
-    ../src/cli/phone_input.cpp
-)
-
-target_compile_definitions(tifa_ggml_tests PRIVATE
-    GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden"
 )
 
 target_link_libraries(tifa_ggml_tests PRIVATE

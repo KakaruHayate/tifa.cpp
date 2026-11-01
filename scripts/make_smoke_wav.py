@@ -9,7 +9,7 @@ Produces
 
 The phone sequence is ``AP SP``: both symbols exist in every TIFA-1.0
 vocabulary (they are the global annotation symbols), so the aligner runs a
-real forward pass without needing G2P dictionaries or an LSTM model.
+real forward pass without needing any text-to-phoneme step.
 """
 
 from __future__ import annotations

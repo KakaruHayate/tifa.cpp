@@ -54,7 +54,7 @@ All four produce byte-identical TextGrids on the checked clips.
 
 ```bash
 # align the whole dataset (Vulkan, F16)
-TIFA_GGML_BACKEND=vulkan build/bin/tifa_ggml_cli.exe align \
+TIFA_GGML_BACKEND=vulkan build/bin/tifa.exe align \
     ../../dataset/wavs -m ../models/tifa-1.0-st-f16.gguf \
     --transcriptions-csv ../../dataset/transcriptions.csv \
     -l zh -o ../eval/pred --output-formats textgrid,json -q

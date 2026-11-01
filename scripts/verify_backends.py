@@ -3,7 +3,7 @@
 (model, backend) combinations and report how many phone boundaries differ.
 
 Usage:
-    python verify_backends.py --cli build/bin/tifa_ggml_cli.exe \
+    python verify_backends.py --cli build/bin/tifa.exe \
         --models "f32=../models/tifa-1.0-st-f32.gguf,f16=../models/tifa-1.0-st-f16.gguf" \
         --dataset ../dataset --limit 20 \
         --backends "cpu,vulkan" --out-dir ../eval/backend

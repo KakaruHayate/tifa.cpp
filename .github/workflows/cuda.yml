@@ -106,7 +106,7 @@ jobs:
             # hosted runner does not have; startup is impossible there.
             echo "no NVIDIA driver on this runner; compile is the verification"
           else
-            build/bin/tifa_ggml_cli --version || echo "startup needs the driver; compile is the verification"
+            build/bin/tifa --version || echo "startup needs the driver; compile is the verification"
           fi
 
       - name: Fetch the converted models (from the target release's run)
@@ -147,10 +147,10 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           if [ "${{ runner.os }}" = "Windows" ]; then
-            ENGINE=tifa_ggml_cli.exe
+            ENGINE=tifa.exe
             LIBS=$(find build/bin -maxdepth 1 -name '*.dll')
           else
-            ENGINE=tifa_ggml_cli
+            ENGINE=tifa
             LIBS=$(find build/bin -maxdepth 1 -name '*.so*')
           fi
 
@@ -158,7 +158,7 @@ jobs:
           # the asset name -- otherwise it reads tifa-cuda-linux-x64-cuda-full.
           PLATFORM="${{ matrix.name }}"; PLATFORM="${PLATFORM%-cuda}"
 
-          BASE="tifa_ggml-${{ matrix.name }}"
+          BASE="tifa-${{ matrix.name }}"
           mkdir -p "$BASE"
           cp "build/bin/$ENGINE" "$BASE/"
           for f in $LIBS; do cp "$f" "$BASE/"; done
@@ -171,15 +171,11 @@ jobs:
               if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
               B="tifa-cuda-$PLATFORM-$PREC"
               rm -rf "$B"; cp -r "$BASE" "$B"
-              # Same layout the release bundles use: the GGUF's @dictionaries/
-              # and @assets/ paths resolve against models/.
-              mkdir -p "$B/models/dictionaries" "$B/models/assets"
+              # Same layout the release bundles use.
+              mkdir -p "$B/models"
               cp "models_out/$MODEL" "$B/models/tifa.gguf"
-              cp dicts/*.txt "$B/models/dictionaries/"
-              cp -r dicts/cpp_pinyin "$B/models/" 2>/dev/null || true
-              cp models_out/lstm-g2p-eng.gguf "$B/models/assets/LstmG2p-Eng.gguf" 2>/dev/null || true
-              cp models_out/breath-v5-24k-f16.gguf "$B/models/" 2>/dev/null || true
               cp docs/usage.md "$B/USAGE.md"
+              cp LICENSE THIRD_PARTY_NOTICES.md "$B/"
               tar -czf "dist/$B.tar.gz" "$B"
             done
           fi

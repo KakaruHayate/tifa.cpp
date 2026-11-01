@@ -42,9 +42,9 @@ public:
     AlignResult align(const float * waveform, std::size_t n_samples,
                       int sample_rate, const AlignRequest & request);
 
-    // Same, but with the token sequence already resolved (the G2P path):
-    // `tokens` are vocabulary ids, `labels` their display labels, `words` and
-    // `groups` the 1-based semantic-word / pronunciation-group ids per token.
+    // Same, but with the token sequence already resolved: `tokens` are
+    // vocabulary ids, `labels` their display labels, `words` and `groups` the
+    // 1-based semantic-word / pronunciation-group ids per token.
     AlignResult align_tokens(const float * waveform, std::size_t n_samples,
                              int sample_rate, const AlignTokenRequest & request);
 

@@ -84,9 +84,6 @@ struct TifaModelConfig {
     std::vector<std::string>   global_symbols;    // e.g. AP, EP, GS
     std::vector<std::string>   stop_symbols;      // e.g. SP, sil, pau
     std::vector<std::vector<std::string>> merged_groups;
-
-    // Raw G2P pipeline configuration as JSON text (parsed by the G2P layer).
-    std::string g2p_json;
 };
 
 }  // namespace tifa_ggml

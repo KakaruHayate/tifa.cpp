@@ -34,7 +34,7 @@ struct AlignRequest {
     std::string score_unit    = "none";  // "none" for a fixed phone sequence
 };
 
-// Alignment request for an already-resolved token sequence (the G2P path).
+// Alignment request for an already-resolved token sequence (advanced API).
 struct AlignTokenRequest {
     std::vector<std::int32_t> tokens;        // vocabulary ids
     std::vector<std::string>  labels;        // display label per token

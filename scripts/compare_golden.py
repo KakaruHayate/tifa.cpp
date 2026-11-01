@@ -6,7 +6,7 @@ Usage:
                              [--tolerance 1e-4]
 
 `--ref` holds the .npy files written by dump_tifa_reference.py; `--cpp` holds
-the raw .bin files written by `tifa_ggml_cli align --dump-dir`.  Exits non-zero
+the raw .bin files written by `tifa align --dump-dir`.  Exits non-zero
 when any stage exceeds the tolerance.
 """
 

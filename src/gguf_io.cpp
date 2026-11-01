@@ -316,10 +316,11 @@ std::vector<std::string> json_string_list(const json::Value * v) {
     return out;
 }
 
-// Parse `tifa.vocab.json` — the model's vocabulary.json plus the G2P pipeline
-// config, packed by the converter into a single metadata string:
+// Parse `tifa.vocab.json` — the model's vocabulary plus global/stop symbols,
+// packed by the converter into a single metadata string:
 //   {"symbols": {"zh/a": 158, ...}, "global_symbols": [...],
-//    "stop_symbols": [...], "merged_groups": [["AP","br"], ...], "g2p": {...}}
+//    "stop_symbols": [...], "merged_groups": [["AP","br"], ...]}
+// (Older 0.1.x GGUFs also carry a "g2p" object; the engine ignores it.)
 void fill_vocabulary(const GgufFile & f, TifaModelConfig & c) {
     const auto raw = f.get_string_opt("tifa.vocab.json");
     if (!raw.has_value() || raw->empty()) {
@@ -351,9 +352,6 @@ void fill_vocabulary(const GgufFile & f, TifaModelConfig & c) {
         for (const auto & g : groups->arr) {
             c.merged_groups.push_back(json_string_list(&g));
         }
-    }
-    if (const json::Value * g2p = doc.find("g2p"); g2p && !g2p->is_null()) {
-        c.g2p_json = json::dump(*g2p);
     }
 }
 

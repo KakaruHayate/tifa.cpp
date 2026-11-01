@@ -1,14 +1,16 @@
-# 据说字音识别和原版差异较大，使用还请谨慎，目前尚未解决
-
-# tifa.cpp — TIFA (Token-Imputing Forced Aligner) on ggml
+# tifa.cpp — TIFA (Token-Imputing Forced Aligner) inference engine on ggml
 
 Native C++ inference for [openvpi/TIFA](https://github.com/openvpi/TIFA), the
 multilingual forced aligner used to build singing-voice datasets.  Runs on CPU,
-Vulkan, Metal or CUDA with no Python at runtime, and ships with **TIFA Label**,
-a desktop tool for the full dataset pipeline: TIFA align → BreathLab breath AP/SP →
-2PASS re-align.
+Vulkan, Metal or CUDA with no Python at runtime.
 
-> [中文说明](README_CN.md) · dataset workflow: [docs/dataset-workflow.md](docs/dataset-workflow.md) · bundled usage guide (bilingual): [docs/usage.md](docs/usage.md)
+**This is an engine, not a pipeline.**  It takes audio plus an already-known
+phone sequence and predicts phone-level boundaries.  Text-to-phoneme (G2P),
+PFML, breath detection, pronunciation dictionaries and the Electron annotator
+were removed in 0.2.0 — see [docs/scope-change.md](docs/scope-change.md) for
+why, and for the migration guide.
+
+> [中文说明](README_CN.md) · scope change: [docs/scope-change.md](docs/scope-change.md) · bundled usage guide (bilingual): [docs/usage.md](docs/usage.md)
 
 ## Download
 
@@ -16,29 +18,22 @@ Prebuilt packages live in [Releases](https://github.com/KakaruHayate/tifa.cpp/re
 
 | package | contents |
 |---|---|
-| `tifa-label-<platform>.zip` / `.tar.gz` | GUI annotator (Electron + engine + model + dictionaries), unpack and run |
-| `tifa-cli-<platform>-full.tar.gz` | CLI, F16 full-precision model |
-| `tifa-cli-<platform>-q4.tar.gz` | CLI, Q4_0 smallest model |
+| `tifa-cli-<platform>-full.tar.gz` | `tifa` engine + F16 full-precision model |
+| `tifa-cli-<platform>-q4.tar.gz` | `tifa` engine + Q4_0 smallest model |
 
-`<platform>` is `windows-x64`, `linux-x64` or `macos-arm64` — every platform gets
-both a GUI and a CLI package.  **Each archive already contains the models, the
-dictionaries and the runtime libraries, so one download is all it takes; nothing
-has to be assembled by hand.**  See `USAGE.md` inside it (Chinese + English).  To
-build from source see *Build* below.
-
-The one exception is Japanese kanji: its MeCab/UniDic dictionary (~49 MB packed)
-is the separate `unidic-lite-dicdir.zip` release asset — the GUI installs it
-with one click, or unpack it as `models/unidic/` yourself.  Kana lyrics work
-without it.
+`<platform>` is `windows-x64`, `linux-x64` or `macos-arm64`.  Each archive
+already contains the model and the runtime libraries, so one download is all it
+takes.  See `USAGE.md` inside it (Chinese + English).  To build from source see
+*Build* below.
 
 > The macOS build is unsigned: right-click > Open the first time.
 
 ## What it does
 
-Given a recording and its text (or an already known phoneme sequence), TIFA
-predicts phone-level time boundaries and writes a three-tier Praat TextGrid
-(`texts` / `words` / `phones`), plus optional self-check metrics that flag
-alignments worth a human look.
+Given a recording and its phone sequence, TIFA predicts phone-level time
+boundaries and writes a three-tier Praat TextGrid (`texts` / `words` /
+`phones`), plus optional self-check metrics that flag alignments worth a human
+look.
 
 Each tier is written continuously: a stretch that no phone or word claims — the
 decoder's gap states — becomes an interval with an empty label.  This mirrors
@@ -50,8 +45,7 @@ TextGrid labeler require.
 audio ──► log-mel (48 kHz, hop 480, 80 bins)
       ──► JEBF backbone (8 layers, dim 256, joint attention, RoPE, qk-norm)
       ──► frame/token features + token logits
-text  ──► G2P ──► candidate grid ──► (optional pronunciation scoring)
-      ──► cosine similarity [T, N] ──► Viterbi decode ──► spans ──► TextGrid
+phones ──► cosine similarity [T, N] ──► Viterbi decode ──► spans ──► TextGrid
 ```
 
 ## Highlights
@@ -62,16 +56,11 @@ text  ──► G2P ──► candidate grid ──► (optional pronunciation s
   benchmark, 42× realtime; CPU F16 11.5× realtime.  The CgMLP depthwise convs
   run through the dedicated `GGML_OP_CONV_2D_DW` kernel (no im2col) — the same
   direct path game.cpp uses.
-- **Multilingual G2P** — Chinese (pinyin, hanzi), Cantonese (jyutping),
-  Japanese (kana out of the box; kanji through MeCab + UniDic — the
-  `unidic-lite-dicdir` release asset, installed with one click in the GUI),
-  English (dictionary + LSTM OOV inference), with the candidate/pronunciation
-  grid the model was trained with.
-- **PFML input** — the upstream Pronunciation Flow Markup Language: final
-  phonemes (`<word phonemes="zh ong">重</word>`) and language scopes
-  (`<scope language="ja">東京</scope>`) embed directly in the transcript.
-- **Full dataset workflow** — align → `breathe --merge` (BreathLab AP/SP folded into
-  the phones tier) → 2PASS re-align, in the CLI and in the GUI.
+- **Stable contract** — audio + phones + language in, spans/TextGrid/JSON out.
+  No dictionaries, no tokenizer, no model-side text preprocessing.
+- **Phone inputs for existing tools** — inline list, `.txt`, Praat TextGrid,
+  or a DiffSinger `transcriptions.csv`; `--textgrid` also re-attaches the
+  first pass's `texts`/`words` tiers for a 2PASS re-align.
 - **Quantization matrix** — F32/F16/Q8_0/Q4_0 per-tensor recipes with measured
   boundary-error impact (`scripts/quant_matrix.py`).
 
@@ -87,27 +76,8 @@ cmake --build build -j
 ```
 
 Options: `TIFA_GGML_VULKAN`, `TIFA_GGML_CUDA`, `TIFA_GGML_METAL`,
-`TIFA_GGML_BUILD_CLI`, `TIFA_GGML_BUILD_TESTS`, `TIFA_GGML_BUILD_MODEL`
-(off builds only the G2P/PFML library, see below).
-
-## G2P / PFML library (for downstream tools)
-
-G2P and PFML build and link without ggml, so a tool that sits *before* the
-aligner — an annotation editor — needs no model, backend or GGUF:
-
-```cmake
-set(TIFA_GGML_BUILD_MODEL OFF)          # only tifa_ggml_g2p, no ggml fetched
-add_subdirectory(tifa.cpp)
-target_link_libraries(your_editor PRIVATE tifa_ggml::g2p)
-```
-
-The interface is [`include/tifa_ggml/g2p.h`](include/tifa_ggml/g2p.h): text/PFML
-to words (`convert` / `convert_pfml`), words back to PFML (`to_pfml`, with a
-round-trip guarantee), syntax-only validation (`validate_pfml`, no model
-needed), pronunciation candidates (`candidates`) and phoneme checking
-(`resolve_phoneme`).  The English OOV LSTM converter needs ggml, so it is
-compiled out in that configuration and English OOV words fall back to the
-dictionary.
+`TIFA_GGML_BUILD_CLI`, `TIFA_GGML_BUILD_TESTS`.  The CLI binary is
+`build/bin/tifa` (`tifa.exe` on Windows).
 
 ## Model
 
@@ -119,78 +89,58 @@ python scripts/convert_tifa_to_gguf.py \
     --model-dir models/TIFA-1.0-ST -o models/tifa-1.0-st-f16.gguf --dtype f16
 ```
 
-The GGUF embeds the vocabulary and the G2P pipeline configuration; the
-pronunciation dictionaries stay as files next to the model
-(`ds-zh-pinyin-lite.txt`, `jyutping_dict.txt`, `japanese_dict_full.txt`,
-`ds_cmudict-07b.txt`).  For Japanese kanji lyrics, additionally unpack the
-`unidic-lite-dicdir.zip` release asset so the MeCab/UniDic dictionary sits at
-`models/unidic/` (see [docs/usage.md](docs/usage.md)); licenses in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+The GGUF embeds the vocabulary and the global/stop symbol sets.  It no longer
+embeds a G2P pipeline configuration; the engine has no use for one.
 
 ## CLI
 
+`tifa` needs a phone source — it will not invent phones from text.
+
 ```bash
 # known phoneme sequence (DiffSinger dataset)
-tifa_ggml_cli align wavs/ -m models/tifa-1.0-st-f16.gguf \
+tifa align wavs/ -m models/tifa-1.0-st-f16.gguf \
     --transcriptions-csv transcriptions.csv -l zh -o out --output-formats textgrid,json
 
-# phones from a TextGrid / inline
-tifa_ggml_cli align song.wav -m model.gguf --textgrid song.TextGrid -l zh
-tifa_ggml_cli align song.wav -m model.gguf --phones "AP zh e n a"
+# phones from a TextGrid / inline / a .txt file
+tifa align song.wav -m model.gguf --textgrid song.TextGrid -l zh
+tifa align song.wav -m model.gguf --phones "AP zh e n a"
+tifa align song.wav -m model.gguf --phones-file phones.txt -l zh
 
-# text + audio (G2P) — sidecar .txt/.lab beside the audio
-tifa_ggml_cli align song.wav -m model.gguf -l zh
-
-tifa_ggml_cli inspect model.gguf
-```
-
-```bash
-# breath/AP-SP detection; --merge folds the result into a first-pass
-# alignment's phones tier (step 2 of the dataset 2PASS workflow)
-tifa_ggml_cli breathe song.wav -m models/breath-v5-24k.gguf --merge out -o out
-# step 3: re-align with the breath annotation in place
-tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -o out2
+tifa inspect model.gguf
 ```
 
 `--skip-handling discard|omit|preserve` controls what happens to zero-width
 (skipped) phones; `--skip-penalty` is the raw cosine cost of a skip (0.5
-matches the reference); `--oov-handling raise|discard|force` selects the G2P
-out-of-vocabulary policy; `--backend cpu|vulkan|cuda|metal|auto` and
-`--output-formats textgrid,json` are also available.
+matches the reference); `--backend cpu|vulkan|cuda|metal|auto`,
+`--output-formats textgrid,json`, `--fill-gaps` and `--max-frames` are also
+available.  `-l` is required unless every phone is already language-qualified:
+the model is multilingual and its symbols are stored as `zh/zh`, `ja/a`, ...
 
-## TIFA Label (desktop tool)
+## 2PASS
 
-`ui/` is an Electron app (see `ui/README.md`) that drives the dataset
-pipeline in one batch run per file:
+The engine still supports the second pass of a dataset workflow: run `align`
+once, edit the resulting `phones` tier (for example insert `AP`/`SP` from an
+external breath detector), then re-run with `--textgrid`.  The first pass's
+`texts`/`words` grouping is inherited onto the new phone boundaries.
 
-1. **Import audio** — files or folders (scanned recursively).
-2. **Annotation source** — text/G2P (sidecar `.txt`/`.lab` or a uniform
-   transcript; PFML accepted) or existing phones (same-name TextGrid, a
-   DiffSinger `transcriptions.csv`, a TextGrid folder, an inline list).  The
-   old `.lab + wav` workflow never touches G2P.
-3. **Pipeline** — align → (optional) BreathLab breath detection merged into the
-   phones tier → (optional) 2PASS re-align.
-
-Per-file status/agreement, progress, streaming log, cancel.  Each file yields a
-TextGrid **and a diagnosis JSON, exported by default — sort by it and only
-proof-read the worst ~10%**.  The UI is in Chinese.  Release bundles need no
-configuration: the engine and models sit at the default relative paths beside
-the app and are imported automatically.
+```bash
+tifa align song.wav -m models/tifa.gguf -l zh -o pass1
+# edit pass1/song.TextGrid's phones tier with any tool
+tifa align song.wav -m models/tifa.gguf --textgrid pass1 -l zh -o pass2
+```
 
 ## Layout
 
 ```
 src/                 engine: backend / gguf_io / tensor_utils / mel / ops_* / model_tifa
-src/g2p/             pinyin engine, converters (English LSTM, PFML), candidate grid
-src/breath/          BreathLab breath AP/SP detection on ggml
-src/cli/             tifa_ggml_cli (align / breathe / inspect)
+src/cli/             tifa (align / inspect)
 include/tifa_ggml/   public C++ API (PIMPL, ggml-free headers)
-scripts/             converter, reference dumps, golden comparison, quant matrix, eval
-ui/                  Electron desktop app
+scripts/             converter, reference dumps, golden comparison, quant matrix
+docs/scope-change.md why 0.2.0 removed G2P / breath / UI
 AGENT.md             hard-won constraints — read before changing the graph
 ```
 
 ## License
 
-MPL-2.0 (this port).  TIFA's model weights and dictionaries keep their own
-licenses — see the upstream release.
+MPL-2.0 (this port).  TIFA's model weights keep their own license — see the
+upstream release.

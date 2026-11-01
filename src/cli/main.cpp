@@ -1,14 +1,9 @@
-// tifa_ggml_cli — command line front-end for the TIFA ggml aligner.
+// tifa — command line front-end for the TIFA ggml inference engine.
 
 #include "phone_input.h"
 
 #include "align_decode.h"
 #include "audio_io.h"
-#include "breath/breath.h"
-#include "g2p/g2p.h"
-#include "g2p/pfml.h"
-#include "g2p/select.h"
-#include "json.h"
 #include "model_impl.h"
 
 #include "tifa_ggml/errors.h"
@@ -40,34 +35,21 @@ using namespace tifa_ggml;
 namespace {
 
 void print_version() {
-    std::printf("tifa_ggml_cli %d.%d.%d\n", TIFA_GGML_VERSION_MAJOR,
+    std::printf("tifa %d.%d.%d\n", TIFA_GGML_VERSION_MAJOR,
                 TIFA_GGML_VERSION_MINOR, TIFA_GGML_VERSION_PATCH);
 }
 
 void print_usage() {
-    std::printf(R"(tifa_ggml_cli — TIFA (Token-Imputing Forced Aligner) on ggml
+    std::printf(R"(tifa — TIFA (Token-Imputing Forced Aligner) inference engine
 
 Usage:
-  tifa_ggml_cli --version | --help
-  tifa_ggml_cli inspect <model.gguf>
-  tifa_ggml_cli align <audio-or-dir> -m <model.gguf> [options]
-  tifa_ggml_cli breathe <audio-or-dir> -m <breath.gguf> [options]
+  tifa --version | --help
+  tifa inspect <model.gguf>
+  tifa align <audio-or-dir> -m <model.gguf> --phones ... [options]
 
-Breathe options:
-  -m, --model PATH            breath/AP detector GGUF (required)
-  -o, --output-dir DIR        output directory (default: input directory)
-      --output-formats LIST   textgrid,json           (default: textgrid,json)
-      --backend NAME          auto | cpu | vulkan | cuda | metal
-      --merge PATH|DIR        fold the detected AP/SP into the phones tier of
-                              the first-pass alignment (<name>.TextGrid) and
-                              write the enriched TextGrid for the second pass
-                              (dataset 2PASS workflow: align -> breathe --merge
-                              -> align --textgrid)
-      --phones-tier NAME      tier to merge into       (default: phones)
-      --min-insert-ms MS      shortest AP/SP inserted (default: 50)
-      --fill-gaps LABEL       label for stretches no phone covers
-                              (default: SP; empty leaves them unlabelled)
-  -q, --quiet                 only report errors
+The engine takes audio plus an already-known phone sequence; text-to-phoneme
+conversion is deliberately out of scope (see docs/scope-change.md).  Provide
+phones with --phones, --phones-file, --textgrid or --transcriptions-csv.
 
 Align options:
   -m, --model PATH            TIFA GGUF model (required)
@@ -79,10 +61,6 @@ Align options:
                               directory scanned as <name>.TextGrid)
       --phones-tier NAME      TextGrid tier name (default: phones)
       --transcriptions-csv P  DiffSinger transcriptions.csv with ph_seq rows
-      --text STR              inline transcript (G2P) for every input file
-      --text-file PATH        transcript file (G2P); default: <name>.txt/.lab
-      --dict-dir DIR          G2P dictionary root (default: <model dir>/dicts)
-      --oov-handling MODE     raise | discard | force         (default: discard)
       --key ID                row identifier in the csv (default: file stem)
       --skip-handling MODE    discard | omit | preserve   (default: omit)
       --skip-penalty F        raw cosine cost per skipped phone (default: 0.5)
@@ -149,10 +127,6 @@ struct AlignOptions {
     std::string output_formats = "textgrid,json";
     std::string backend = "auto";
     std::string dump_dir;
-    std::string text;             // inline transcript (every file)
-    std::string text_file;        // transcript file
-    std::string dict_dir;         // G2P dictionary root (default: model dir/dicts)
-    std::string oov_handling = "discard";
     float       skip_penalty = 0.5f;
     long        max_frames = 6000;
     // Label for stretches no token covers.  A Praat tier has to run
@@ -274,101 +248,6 @@ void dump_forward(const fs::path & dir, const std::string & identifier,
     meta << "}\n";
 }
 
-
-// ---- text (G2P) mode -------------------------------------------------------
-
-// Resolve the transcript for one input: --text, --text-file, or a sidecar
-// <name>.txt / <name>.lab next to the audio (TIFA's convention).
-std::string resolve_transcript(const AlignOptions & opt, const fs::path & audio,
-                               bool & found)
-{
-    found = false;
-    if (!opt.text.empty()) { found = true; return opt.text; }
-    if (!opt.text_file.empty()) {
-        std::ifstream in(opt.text_file, std::ios::binary);
-        if (!in) throw Error("cannot open transcript: " + opt.text_file);
-        std::ostringstream buf; buf << in.rdbuf();
-        found = true;
-        return buf.str();
-    }
-    for (const char * ext : { ".txt", ".lab" }) {
-        fs::path candidate = audio;
-        candidate.replace_extension(ext);
-        if (fs::exists(candidate) && !fs::is_directory(candidate)) {
-            std::ifstream in(candidate, std::ios::binary);
-            if (!in) continue;
-            std::ostringstream buf; buf << in.rdbuf();
-            found = true;
-            return buf.str();
-        }
-    }
-    return {};
-}
-
-std::string trim_text(std::string s) {
-    const auto b = s.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos) return {};
-    const auto e = s.find_last_not_of(" \t\r\n");
-    return s.substr(b, e - b + 1);
-}
-
-// G2P -> candidate grid -> first choices -> flat token sequence.
-AlignTokenRequest build_text_request(const Model & model,
-                                     tifa_ggml::internal::g2p::Pipeline & pipeline,
-                                     const std::string & text,
-                                     const std::string & language,
-                                     const std::string & oov_handling)
-{
-    using namespace tifa_ggml::internal::g2p;
-    const auto & cfg = model.config();
-
-    std::vector<std::string> languages;
-    if (!language.empty()) languages.push_back(language);
-
-    // Upstream requires PFML for G2P input; a fragment uses direct phonemes /
-    // language scopes, plain text goes through the converters unchanged.
-    const std::vector<Word> words = looks_like_pfml(text)
-        ? convert_pfml(pipeline, text, languages)
-        : pipeline.convert(text, languages);
-    const auto lookup = [&](const std::string & symbol) {
-        return model.resolve_symbol(symbol, languages);
-    };
-    const CandidateGrid grid = encode_paths(words, lookup, cfg.global_symbols,
-                                            cfg.stop_symbols, languages,
-                                            oov_handling, 3);
-    const std::vector<int> choices = first_choices(grid);
-    const MaterializedPaths mat = materialize_paths(grid, choices);
-
-    AlignTokenRequest req;
-    req.tokens.resize(static_cast<std::size_t>(mat.count));
-    req.labels.reserve(static_cast<std::size_t>(mat.count));
-    req.words.resize(static_cast<std::size_t>(mat.count));
-    req.groups.resize(static_cast<std::size_t>(mat.count));
-    for (int i = 0; i < mat.count; ++i) {
-        req.tokens[static_cast<std::size_t>(i)] = mat.tokens[static_cast<std::size_t>(i)];
-        req.words[static_cast<std::size_t>(i)]  = mat.words[static_cast<std::size_t>(i)];
-        req.groups[static_cast<std::size_t>(i)] = mat.groups[static_cast<std::size_t>(i)];
-    }
-
-    req.word_texts = grid.texts;
-    std::vector<std::string> group_scripts;
-    for (int w = 0; w < grid.W; ++w) {
-        const int choice = choices[static_cast<std::size_t>(w)];
-        if (choice <= 0) continue;
-        const auto & cand = grid.lexicon[static_cast<std::size_t>(w)]
-                                       [static_cast<std::size_t>(choice - 1)];
-        for (const auto & ph : cand.phonemes) req.labels.push_back(ph);
-        for (const auto & sc : cand.scripts)  group_scripts.push_back(sc);
-    }
-    if (req.labels.size() != req.tokens.size()) {
-        throw Error("G2P grid is inconsistent (labels " +
-                    std::to_string(req.labels.size()) + " vs tokens " +
-                    std::to_string(req.tokens.size()) + ")");
-    }
-    req.group_scripts = group_scripts;
-    req.language = language;
-    return req;
-}
 
 // Same reader, but a missing tier is not an error: the 2PASS carries optional
 // tiers (texts/words) through and has to cope with TextGrids that lack them.
@@ -499,30 +378,13 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
     Model model = Model::load(opt.model);
     const SkipHandling skip = parse_skip_handling(opt.skip_handling);
 
-    // ---- text (G2P) mode plumbing ----------------------------------------
     const bool have_phone_source =
         !opt.phones.empty() || !opt.phones_file.empty() ||
         !opt.textgrid.empty() || !opt.csv.empty();
-    const bool text_mode = !have_phone_source;
-    std::unique_ptr<tifa_ggml::internal::g2p::Pipeline> g2p;
-    if (text_mode) {
-        if (model.config().g2p_json.empty()) {
-            throw InvalidArgument("the model carries no G2P configuration; use "
-                                  "--phones/--textgrid/--transcriptions-csv");
-        }
-        std::string dict_dir = opt.dict_dir;
-        if (dict_dir.empty()) {
-            const fs::path model_dir = fs::path(opt.model).parent_path();
-            dict_dir = fs::exists(model_dir / "dicts")
-                ? (model_dir / "dicts").string()
-                : model_dir.string();
-        }
-        g2p = std::make_unique<tifa_ggml::internal::g2p::Pipeline>(
-            tifa_ggml::internal::g2p::Pipeline::from_config(
-                model.config().g2p_json, dict_dir));
-        if (!opt.quiet) {
-            std::fprintf(stderr, "g2p: dictionaries from %s\n", dict_dir.c_str());
-        }
+    if (!have_phone_source) {
+        throw InvalidArgument("no phone source: pass --phones/--phones-file/"
+                              "--textgrid/--transcriptions-csv (text/G2P is out "
+                              "of scope; see docs/scope-change.md)");
     }
 
     // Optional shared phone source loaded up front.
@@ -535,9 +397,7 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
         const std::string identifier = basename_no_ext(audio);
         try {
             tifa_cli::PhoneSequence seq;
-            if (text_mode) {
-                // tokens come from G2P below; nothing to resolve here
-            } else if (!inline_phones.phones.empty()) {
+            if (!inline_phones.phones.empty()) {
                 seq = inline_phones;
             } else if (!opt.textgrid.empty()) {
                 fs::path tg = opt.textgrid;
@@ -555,45 +415,29 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
 
             const auto t0 = std::chrono::steady_clock::now();
             AlignResult result;
-            if (text_mode) {
-                bool found = false;
-                const std::string text = trim_text(resolve_transcript(opt, audio, found));
-                if (!found || text.empty()) {
-                    throw InvalidArgument("no transcript: pass --text/--text-file "
-                                          "or put <name>.txt beside the audio");
-                }
-                AlignTokenRequest req = build_text_request(model, *g2p, text,
-                                                           opt.language,
-                                                           opt.oov_handling);
-                req.skip_penalty  = opt.skip_penalty;
-                req.skip_handling = opt.skip_handling;
-                result = model.align_tokens(audio_buf.samples.data(),
-                                            audio_buf.samples.size(),
-                                            audio_buf.sample_rate, req);
-            } else {
-                AlignRequest req;
-                req.phones       = seq.phones;
-                req.groups       = seq.groups;
-                req.language     = opt.language;
-                req.skip_penalty = opt.skip_penalty;
-                result = model.align(audio_buf.samples.data(), audio_buf.samples.size(),
-                                     audio_buf.sample_rate, req);
+            AlignRequest req;
+            req.phones       = seq.phones;
+            req.groups       = seq.groups;
+            req.language     = opt.language;
+            req.skip_penalty = opt.skip_penalty;
+            req.skip_handling = opt.skip_handling;
+            result = model.align(audio_buf.samples.data(), audio_buf.samples.size(),
+                                 audio_buf.sample_rate, req);
 
-                // 2PASS: re-attach the phrase line.  The alignment above only
-                // saw phones, so texts/words would come out empty; the first
-                // pass's grouping is still in the TextGrid we just read.
-                if (!opt.textgrid.empty() && !result.spans.empty()) {
-                    fs::path tg = opt.textgrid;
-                    if (fs::is_directory(tg)) tg /= (identifier + ".TextGrid");
-                    const InheritedGrouping inh = inherit_grouping(
-                        tg.string(), opt.phones_tier, seq.phones,
-                        model.config().stop_symbols, result.spans.size());
-                    if (inh.ok) {
-                        result.words         = inh.words;
-                        result.groups        = inh.groups;
-                        result.word_texts    = inh.word_texts;
-                        result.group_scripts = inh.group_scripts;
-                    }
+            // 2PASS: re-attach the phrase line.  The alignment above only saw
+            // phones, so texts/words would come out empty; the first pass's
+            // grouping is still in the TextGrid we just read.
+            if (!opt.textgrid.empty() && !result.spans.empty()) {
+                fs::path tg = opt.textgrid;
+                if (fs::is_directory(tg)) tg /= (identifier + ".TextGrid");
+                const InheritedGrouping inh = inherit_grouping(
+                    tg.string(), opt.phones_tier, seq.phones,
+                    model.config().stop_symbols, result.spans.size());
+                if (inh.ok) {
+                    result.words         = inh.words;
+                    result.groups        = inh.groups;
+                    result.word_texts    = inh.word_texts;
+                    result.group_scripts = inh.group_scripts;
                 }
             }
 
@@ -651,30 +495,7 @@ int cmd_align(const std::string & input, const AlignOptions & opt) {
     return skipped == 0 ? 0 : 1;
 }
 
-// ---------------------------------------------------------------------------
-// breathe — BreathLab AP/SP detection (breath.h)
-// ---------------------------------------------------------------------------
-
-struct BreatheOptions {
-    std::string model;
-    std::string output_dir;
-    // JSON on by default: the diagnosis file (confidence, monotonicity,
-    // per-phone scores) is how the dataset workflow triages which clips
-    // need proof-reading.  Pass `--output-formats textgrid` to opt out.
-    std::string output_formats = "textgrid,json";
-    std::string backend = "auto";
-    // 2PASS support: fold the detected AP/SP segments into a phones tier
-    // (an alignment produced by `align`), writing the enriched TextGrid that
-    // the second `align --textgrid` pass consumes.
-    std::string merge;              // alignment TextGrid file or directory
-    std::string phones_tier = "phones";
-    double      min_insert_ms = 50.0;
-    // Label for stretches the merged phones tier does not cover (see align).
-    std::string fill_gaps = "SP";
-    bool        quiet = false;
-};
-
-// ---- 2PASS merge: fold AP/SP breath segments into a phones tier -----------
+// ---- 2PASS: read a first-pass TextGrid back --------------------------------
 
 std::string unquote_textgrid_text(std::string s) {
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
@@ -752,182 +573,6 @@ std::vector<tifa_cli::TimedInterval> read_interval_tier(const std::string & path
 }
 
 
-int cmd_breathe(const std::string & input, const BreatheOptions & opt) {
-    if (opt.model.empty()) throw InvalidArgument("--model is required");
-    const fs::path in_path(input);
-    if (!fs::exists(in_path)) throw InvalidArgument("input not found: " + input);
-
-    std::vector<fs::path> files = collect_audio(in_path);
-    if (files.empty()) throw InvalidArgument("no audio files found in " + input);
-
-    fs::path out_dir = opt.output_dir.empty()
-        ? (fs::is_directory(in_path) ? in_path : in_path.parent_path())
-        : fs::path(opt.output_dir);
-    fs::create_directories(out_dir);
-
-    const bool want_textgrid =
-        opt.output_formats.find("textgrid") != std::string::npos;
-    const bool want_json = opt.output_formats.find("json") != std::string::npos;
-
-    if (!opt.backend.empty() && opt.backend != "auto") {
-#if defined(_WIN32)
-        _putenv_s("TIFA_GGML_BACKEND", opt.backend.c_str());
-#else
-        setenv("TIFA_GGML_BACKEND", opt.backend.c_str(), 1);
-#endif
-    }
-
-    BreathModel model = BreathModel::load(opt.model);
-    if (!opt.quiet) {
-        std::fprintf(stderr, "breath: backend %s, model rate %d Hz, %.1f fps, threshold %.2f\n",
-                     model.backend_name(), model.sample_rate(),
-                     static_cast<double>(model.fps()), static_cast<double>(model.threshold()));
-    }
-
-    int ok = 0, skipped = 0;
-    for (const fs::path & audio : files) {
-        const std::string identifier = basename_no_ext(audio);
-        try {
-            internal::AudioBuffer audio_buf = internal::load_audio_file(audio.string());
-            const double seconds =
-                audio_buf.sample_rate > 0
-                    ? static_cast<double>(audio_buf.samples.size()) / audio_buf.sample_rate
-                    : 0.0;
-
-            const auto t0 = std::chrono::steady_clock::now();
-            std::vector<BreathEvent>   ap_events;
-            std::vector<BreathSegment> segments;
-            model.run(audio_buf.samples.data(), audio_buf.samples.size(),
-                      audio_buf.sample_rate, ap_events, segments);
-            const auto t1 = std::chrono::steady_clock::now();
-            const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-            if (want_textgrid) {
-                // One interval tier with the AP/SP/V timeline; unlabelled
-                // stretches are impossible (the segments tile the file).
-                TextGridTier breath_tier;
-                breath_tier.name = "breath";
-                breath_tier.intervals.reserve(segments.size());
-                for (const BreathSegment & segment : segments) {
-                    TextGridInterval interval;
-                    interval.xmin = segment.start;
-                    interval.xmax = segment.end;
-                    interval.text = segment.label;
-                    breath_tier.intervals.push_back(std::move(interval));
-                }
-
-                if (opt.merge.empty()) {
-                    write_textgrid_file(
-                        (out_dir / (identifier + ".breath.TextGrid")).string(),
-                        { std::move(breath_tier) }, seconds);
-                } else {
-                    // 2PASS step 2: fold the AP/SP segments into the phones
-                    // tier of the first-pass alignment and write the enriched
-                    // TextGrid the second `align --textgrid` pass consumes.
-                    fs::path alignment = opt.merge;
-                    if (fs::is_directory(alignment)) {
-                        alignment /= identifier + ".TextGrid";
-                    }
-                    const std::vector<tifa_cli::TimedInterval> phones =
-                        read_interval_tier(alignment.string(), opt.phones_tier);
-                    std::size_t inserted = 0;
-                    const std::vector<tifa_cli::TimedInterval> merged =
-                        merge_breath_into_phones(phones, segments,
-                                                 opt.min_insert_ms / 1000.0,
-                                                 &inserted);
-                    TextGridTier merged_tier;
-                    merged_tier.name = opt.phones_tier;
-                    merged_tier.gap_label = opt.fill_gaps;
-                    merged_tier.intervals.reserve(merged.size());
-                    for (const tifa_cli::TimedInterval & interval : merged) {
-                        TextGridInterval out;
-                        out.xmin = interval.xmin;
-                        out.xmax = interval.xmax;
-                        out.text = interval.text;
-                        merged_tier.intervals.push_back(std::move(out));
-                    }
-                    // Carry texts/words through: the second pass re-reads this
-                    // file to rebuild the phrase line, and dropping them here is
-                    // what used to lose it.
-                    std::vector<TextGridTier> out_tiers;
-                    for (const char * name : { "texts", "words" }) {
-                        bool found = false;
-                        const auto kept = read_interval_tier_opt(alignment.string(), name, found);
-                        if (!found) continue;
-                        TextGridTier tier;
-                        tier.name = name;
-                        tier.intervals.reserve(kept.size());
-                        for (const tifa_cli::TimedInterval & iv : kept) {
-                            tier.intervals.push_back({iv.xmin, iv.xmax, iv.text});
-                        }
-                        out_tiers.push_back(std::move(tier));
-                    }
-                    out_tiers.push_back(std::move(merged_tier));
-                    out_tiers.push_back(std::move(breath_tier));
-                    write_textgrid_file(
-                        (out_dir / (identifier + ".TextGrid")).string(),
-                        std::move(out_tiers), seconds);
-                    if (!opt.quiet) {
-                        std::fprintf(stderr, "breath: merged %zu AP/SP into %zu phones\n",
-                                     inserted, phones.size());
-                    }
-                }
-            }
-            if (want_json) {
-                namespace bren_json = tifa_ggml::internal::json;
-                using bren_json::Value;
-                // The json builder has no factories; set type + payload by hand.
-                const auto num = [](double v) {
-                    Value x; x.type = Value::Type::Number; x.number = v; return x;
-                };
-                const auto text = [](const std::string & s) {
-                    Value x; x.type = Value::Type::String; x.str = s; return x;
-                };
-                const auto obj = []() {
-                    Value x; x.type = Value::Type::Object; return x;
-                };
-                const auto arr = []() {
-                    Value x; x.type = Value::Type::Array; return x;
-                };
-
-                Value ap_list  = arr();
-                Value seg_list = arr();
-                for (const BreathEvent & event : ap_events) {
-                    Value item = obj();
-                    item.obj.push_back({ "start", num(event.start) });
-                    item.obj.push_back({ "end",   num(event.end) });
-                    ap_list.arr.push_back(std::move(item));
-                }
-                for (const BreathSegment & segment : segments) {
-                    Value item = obj();
-                    item.obj.push_back({ "label", text(segment.label) });
-                    item.obj.push_back({ "start", num(segment.start) });
-                    item.obj.push_back({ "end",   num(segment.end) });
-                    seg_list.arr.push_back(std::move(item));
-                }
-                Value doc = obj();
-                doc.obj.push_back({ "sample_rate", num(audio_buf.sample_rate) });
-                doc.obj.push_back({ "duration",    num(seconds) });
-                doc.obj.push_back({ "ap",          std::move(ap_list) });
-                doc.obj.push_back({ "segments",    std::move(seg_list) });
-                std::ofstream out(out_dir / (identifier + ".breath.json"), std::ios::binary);
-                out << bren_json::dump(doc, 2) << "\n";
-            }
-
-            ++ok;
-            if (!opt.quiet) {
-                std::printf("%-40s %6.1f s  %3zu AP events  %4zu segments  %7.1f ms\n",
-                            identifier.c_str(), seconds, ap_events.size(), segments.size(), ms);
-            }
-        } catch (const std::exception & e) {
-            ++skipped;
-            std::fprintf(stderr, "[error] %s: %s\n", identifier.c_str(), e.what());
-        }
-    }
-    std::fprintf(stderr, "done: %d ok, %d skipped/failed\n", ok, skipped);
-    return skipped == 0 ? 0 : 1;
-}
-
 }  // namespace
 
 int main(int argc, char ** argv) {
@@ -972,39 +617,11 @@ int main(int argc, char ** argv) {
                 else if (a == "--fill-gaps")                     opt.fill_gaps = value();
                 else if (a == "--backend")                       opt.backend = value();
                 else if (a == "--dump-dir")                      opt.dump_dir = value();
-                else if (a == "--text")                          opt.text = value();
-                else if (a == "--text-file")                     opt.text_file = value();
-                else if (a == "--dict-dir")                      opt.dict_dir = value();
-                else if (a == "--oov-handling")                  opt.oov_handling = value();
                 else if (a == "--max-frames")                    opt.max_frames = std::stol(value());
                 else if (a == "-q" || a == "--quiet")            opt.quiet = true;
                 else throw InvalidArgument("unknown option: " + a);
             }
             return cmd_align(args[1], opt);
-        }
-        if (cmd == "breathe") {
-            if (args.size() < 2) { print_usage(); return 1; }
-            BreatheOptions opt;
-            Args it; it.values.assign(args.begin() + 2, args.end());
-            while (it.has()) {
-                const std::string a = it.next();
-                auto value = [&]() -> std::string {
-                    const char * v = it.next();
-                    if (!v) throw InvalidArgument("missing value after " + a);
-                    return v;
-                };
-                if (a == "-m" || a == "--model")           opt.model = value();
-                else if (a == "-o" || a == "--output-dir") opt.output_dir = value();
-                else if (a == "--output-formats")          opt.output_formats = value();
-                else if (a == "--backend")                 opt.backend = value();
-                else if (a == "--merge")                   opt.merge = value();
-                else if (a == "--phones-tier")             opt.phones_tier = value();
-                else if (a == "--min-insert-ms")           opt.min_insert_ms = std::strtod(value().c_str(), nullptr);
-                else if (a == "--fill-gaps")               opt.fill_gaps = value();
-                else if (a == "-q" || a == "--quiet")      opt.quiet = true;
-                else throw InvalidArgument("unknown option: " + a);
-            }
-            return cmd_breathe(args[1], opt);
         }
         std::fprintf(stderr, "unknown command: %s\n", cmd.c_str());
         print_usage();

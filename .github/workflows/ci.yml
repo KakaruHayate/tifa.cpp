@@ -19,7 +19,7 @@ name: ci
 on:
   push:
     branches: [main]
-    paths-ignore: ['ui/**', '**/*.md']
+    paths-ignore: ['**/*.md']
   pull_request:
   workflow_dispatch:
 
@@ -150,7 +150,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: build/_deps
-          key: ${{ matrix.name }}-deps-v1-${{ hashFiles('cmake/Dependencies.cmake', 'cmake/Mecab.cmake') }}
+          key: ${{ matrix.name }}-deps-v1-${{ hashFiles('cmake/Dependencies.cmake') }}
           restore-keys: |
             ${{ matrix.name }}-deps-v1-
 
@@ -178,7 +178,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -la build/bin/
-          build/bin/tifa_ggml_cli${{ runner.os == 'Windows' && '.exe' || '' }} --version
+          build/bin/tifa${{ runner.os == 'Windows' && '.exe' || '' }} --version
 
       - name: Download model artifact
         if: matrix.backend == 'cpu' && runner.os != 'Windows'
@@ -198,8 +198,8 @@ jobs:
           PY=$(command -v python3 || command -v python)
           "$PY" scripts/make_smoke_wav.py --out-dir smoke-data
           cp smoke-data/wavs/smoke.wav smoke.wav
-          build/bin/tifa_ggml_cli --help > /dev/null
-          build/bin/tifa_ggml_cli align smoke.wav \
+          build/bin/tifa --help > /dev/null
+          build/bin/tifa align smoke.wav \
             -m model/tifa-1.0-st-f16.gguf \
             --phones "AP SP" --output-formats textgrid,json -o out-smoke
           test -s out-smoke/smoke.TextGrid
@@ -208,14 +208,14 @@ jobs:
           grep -q '"agreement"' out-smoke/smoke.diagnosis.json
           echo "smoke OK"
 
-      - name: Package CLI bundle
+      - name: Package engine bundle
         run: |
           set -euo pipefail
           EXT=""
           if [ "${{ runner.os }}" = "Windows" ]; then EXT=".exe"; fi
-          PKG="tifa_ggml-${{ matrix.name }}"
+          PKG="tifa-${{ matrix.name }}"
           mkdir -p "$PKG"
-          cp "build/bin/tifa_ggml_cli$EXT" "$PKG/"
+          cp "build/bin/tifa$EXT" "$PKG/"
           if [ "${{ runner.os }}" = "Windows" ]; then
             find build/bin -maxdepth 1 -name '*.dll' -exec cp {} "$PKG/" \;
           elif [ "${{ runner.os }}" = "macOS" ]; then
@@ -229,68 +229,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}-bundle
-          path: tifa_ggml-${{ matrix.name }}.tar.gz
+          path: tifa-${{ matrix.name }}.tar.gz
           retention-days: 7
-
-  ui-e2e:
-    name: ui end-to-end (real engine + model)
-    needs: prepare-model
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure engine (CPU)
-        run: >
-          cmake -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DTIFA_GGML_BUILD_CLI=ON
-          -DTIFA_GGML_BUILD_TESTS=OFF
-
-      - name: Build engine
-        run: cmake --build build --config Release
-
-      - name: Download model artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: tifa-1.0-st-f16
-          path: models
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install UI deps
-        working-directory: ui
-        run: npm ci
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Synthesize a tiny dataset (wav + transcriptions.csv)
-        run: python scripts/make_smoke_wav.py --out-dir e2e-data
-
-      - name: Run the UI end-to-end (align stage)
-        working-directory: ui
-        env:
-          TIFA_E2E_DATASET: ${{ github.workspace }}/e2e-data
-          TIFA_E2E_SAMPLE: smoke
-          TIFA_GGML_MODEL: ${{ github.workspace }}/models/tifa-1.0-st-f16.gguf
-          TIFA_E2E_BACKEND: cpu
-        run: npx electron scripts/e2e-electron.js
-
-  ui:
-    name: ui (electron smoke test)
-    runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: ui
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install
-        run: npm ci
-      - name: Headless logic tests
-        run: node scripts/smoke-test.js

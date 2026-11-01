@@ -2,18 +2,13 @@ name: release
 
 # Ships, per release (and to the `edge` pre-release on manual dispatch):
 #
-#   tifa-label-<platform>.zip/.tar.gz  GUI bundle: Electron app + engine +
-#                                      Q4_0 model + dictionaries + USAGE.md,
-#                                      self-contained -- one download, no setup
-#   tifa-cli-<platform>-full.tar.gz    CLI bundle, full-precision F16 model
-#   tifa-cli-<platform>-q4.tar.gz      CLI bundle, Q4_0 (smallest) model
-#   breathLab_models_dml.zip           upstream source of the BreathLab breath
-#                                      model (by Xiantaidu), for re-conversion
-#                                      <platform> = windows-x64 | linux-x64 | macos-arm64
+#   tifa-cli-<platform>-full.tar.gz   engine + F16 model
+#   tifa-cli-<platform>-q4.tar.gz     engine + Q4_0 (smallest) model
+#   <platform> = windows-x64 | linux-x64 | macos-arm64
 #
-# Two sibling CLI packages per platform follow the game.cpp convention: the
-# same binaries with different weights, so a host can pick precision per
-# install.  Triggered by a v* tag or manually (workflow_dispatch -> `edge`).
+# An engine-only release: text-to-phoneme (G2P), breath detection and the
+# Electron UI are no longer part of this project (docs/scope-change.md).
+# Triggered by a v* tag or manually (workflow_dispatch -> `edge`).
 # CUDA packages are built by cuda.yml and appended to the same release later.
 
 on:
@@ -39,7 +34,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install conversion deps
-        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf onnx
+        run: pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu && pip install --quiet numpy pyyaml gguf
 
       - name: Download the TIFA-1.0-ST checkpoint
         run: |
@@ -60,57 +55,6 @@ jobs:
             -o tifa-1.0-st-q4_0.gguf --dtype f16 \
             --quant-config scripts/quant_q4_all.json
 
-      - name: Download the BreathLab source zip
-        # The zip is a model-source upload, not a repo file, so it lives on a
-        # release rather than in git.  Prefer this ref's own release (a tag
-        # re-run), and fall back to the rolling `edge` pre-release, which is
-        # where the original upload sits -- otherwise a tagged build would
-        # depend on `edge` continuing to exist.
-        # Tolerant: the zip is a model-source upload, not a repo file.  When it
-        # is missing the bundles simply ship without a breath model and the
-        # quick-start keeps pointing at scripts/convert_breath_to_gguf.py.
-        continue-on-error: true
-        run: |
-          for TAG in "${{ github.ref_type == 'tag' && github.ref_name || 'edge' }}" edge; do
-            url="https://github.com/${{ github.repository }}/releases/download/$TAG/breathLab_models_dml.zip"
-            if curl -fsSL -o breathLab_models_dml.zip "$url"; then
-              echo "breathLab_models_dml.zip <- $TAG"
-              break
-            fi
-            rm -f breathLab_models_dml.zip
-          done
-          test -s breathLab_models_dml.zip && unzip -q -o breathLab_models_dml.zip -d breathlab_src
-
-      - name: Keep the BreathLab source zip for the release
-        uses: actions/upload-artifact@v4
-        with:
-          name: breathlab-source
-          path: breathLab_models_dml.zip
-          if-no-files-found: ignore
-          retention-days: 7
-
-      - name: Convert the breath/AP detector (BreathLab)
-        continue-on-error: true
-        run: |
-          python scripts/convert_breath_to_gguf.py             --model-dir breathlab_src/models_dml --name v5_24k             -o breath-v5-24k-f16.gguf
-          ls -la breath-v5-24k-f16.gguf
-
-      - name: Convert the English LSTM G2P (OOV inference for the en converter)
-        run: |
-          python scripts/convert_lstm_g2p_to_gguf.py             --model-dir model_src/TIFA-1.0-ST/assets/LstmG2p-Eng             -o lstm-g2p-eng.gguf
-
-      - name: Convert the FoxBreatheLabeler AP detector (FBL)
-        # Tolerant: the checkpoint is an upstream release asset, not a repo file.
-        # Q4_0 is the one to ship (38% of F16, identical AP quality); F16 is the
-        # precision option.
-        continue-on-error: true
-        run: |
-          curl -fsSL -o fbl.zip             https://github.com/autumn-DL/FoxBreatheLabeler/releases/download/0.2/20ms.zip
-          unzip -q -o fbl.zip -d fbl_src
-          python scripts/convert_fbl_to_gguf.py --model-dir fbl_src/20ms --dtype q4_0 -o breath-fbl-q4_0.gguf
-          python scripts/convert_fbl_to_gguf.py --model-dir fbl_src/20ms --dtype f16  -o breath-fbl-f16.gguf
-          ls -la breath-fbl-*.gguf
-
       - name: Verify the two differ in size (quantization actually applied)
         run: |
           F16=$(stat -c%s tifa-1.0-st-f16.gguf)
@@ -118,40 +62,12 @@ jobs:
           echo "f16=$F16 q4_0=$Q4"
           test "$Q4" -lt "$F16"
 
-      - name: Package the unidic-lite dictionary (Japanese kanji G2P)
-        # The `japanese-mecab` converter needs a compiled MeCab/UniDic dicdir
-        # (~260 MB extracted): far too big for the bundles, so it ships as its
-        # own release asset.  Tolerant: a PyPI hiccup must not fail the
-        # release; without the dictionary the converter falls back to kana.
-        continue-on-error: true
-        run: |
-          pip download unidic-lite==1.0.8 --no-deps -d unidic_dl
-          # pip normalises the name to unidic-lite-<ver>.tar.gz (dash) while
-          # PyPI serves unidic_lite-<ver>.tar.gz (underscore): match both.
-          for f in unidic_dl/unidic[_-]lite-*.tar.gz; do
-            [ -f "$f" ] || { echo "unidic-lite sdist not found in unidic_dl/"; exit 1; }
-            python scripts/package_unidic.py --sdist "$f" --out unidic-lite-dicdir.zip
-          done
-          ls -la unidic-lite-dicdir.zip
-
       - uses: actions/upload-artifact@v4
         with:
           name: tifa-models
           path: |
             tifa-1.0-st-f16.gguf
             tifa-1.0-st-q4_0.gguf
-            lstm-g2p-eng.gguf
-            breath-v5-24k-f16.gguf
-            breath-fbl-q4_0.gguf
-            breath-fbl-f16.gguf
-          if-no-files-found: warn
-          retention-days: 7
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: unidic-dicdir
-          path: unidic-lite-dicdir.zip
-          if-no-files-found: ignore
           retention-days: 7
 
   # ---------------------------------------------------------------------------
@@ -169,17 +85,17 @@ jobs:
           - os: windows-latest
             name: windows-x64
             cmake_extra: "-DTIFA_GGML_VULKAN=ON"
-            bin: build/bin/tifa_ggml_cli.exe
+            bin: build/bin/tifa.exe
             libs: "build/bin/*.dll"
           - os: ubuntu-latest
             name: linux-x64
             cmake_extra: "-DTIFA_GGML_VULKAN=ON"
-            bin: build/bin/tifa_ggml_cli
+            bin: build/bin/tifa
             libs: "build/bin/*.so*"
           - os: macos-14
             name: macos-arm64
             cmake_extra: "-DTIFA_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
-            bin: build/bin/tifa_ggml_cli
+            bin: build/bin/tifa
             libs: "build/bin/*.dylib"
 
     defaults:
@@ -209,11 +125,16 @@ jobs:
           sudo apt-get install -y -qq libvulkan-dev glslc spirv-headers spirv-tools
 
       - name: Configure
+        # GGML_NATIVE=OFF is load-bearing for a *distributed* binary: the hosted
+        # runners have AVX-512, and a native build bakes those instructions in.
+        # The resulting tifa.exe crashed with STATUS_ILLEGAL_INSTRUCTION
+        # (0xC000001D) on a Haswell CPU the moment it ran CPU inference.
         run: |
           cmake -S . -B build \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DTIFA_GGML_BUILD_CLI=ON \
                 -DTIFA_GGML_BUILD_TESTS=OFF \
+                -DGGML_NATIVE=OFF \
                 ${{ matrix.cmake_extra }}
 
       - name: Build
@@ -229,65 +150,38 @@ jobs:
           set -euo pipefail
           for PREC in full q4; do
             if [ "$PREC" = "full" ]; then MODEL=tifa-1.0-st-f16.gguf; else MODEL=tifa-1.0-st-q4_0.gguf; fi
-            # the breath detector follows the bundle's precision, so a q4 bundle
-            # is q4 all the way through and never carries two sets of weights
-            if [ "$PREC" = "full" ]; then FBL=breath-fbl-f16.gguf; else FBL=breath-fbl-q4_0.gguf; fi
             PKG="tifa-cli-${{ matrix.name }}-$PREC"
             mkdir -p "$PKG/models"
             cp "${{ matrix.bin }}" "$PKG/"
             # shellcheck disable=SC2086
             cp ${{ matrix.libs }} "$PKG/" 2>/dev/null || true
             cp "$MODEL" "$PKG/models/tifa.gguf"
-            # G2P dictionaries: the GGUF's g2p config resolves @dictionaries/x
-            # against the model directory, so the flat tables must sit under
-            # models/dictionaries/ and the cpp-pinyin engine under
-            # models/cpp_pinyin/ -- a flat copy into models/ leaves every
-            # lookup pointing at nothing.
-            mkdir -p "$PKG/models/dictionaries" "$PKG/models/assets"
-            cp dicts/*.txt "$PKG/models/dictionaries/"
-            cp -r dicts/cpp_pinyin "$PKG/models/" 2>/dev/null || true
-            # The English converter's model_path is @assets/LstmG2p-Eng; the
-            # converted GGUF lands beside that name so it resolves.
-            cp lstm-g2p-eng.gguf "$PKG/models/assets/LstmG2p-Eng.gguf" 2>/dev/null || true
-            # BreathLab breath model, converted from the BreathLab source zip that
-            # ships beside these bundles (absent when that download failed).
-            cp breath-v5-24k-f16.gguf "$PKG/models/" 2>/dev/null || true
-            # FoxBreatheLabeler AP detector, same precision as the aligner
-            cp "$FBL" "$PKG/models/" 2>/dev/null || true
             cp docs/usage.md "$PKG/USAGE.md"
+            cp LICENSE THIRD_PARTY_NOTICES.md "$PKG/"
             cat > "$PKG/README.txt" <<EOF
-          tifa_ggml_cli -- TIFA forced aligner (see the repository README)
-          Bundled model: $MODEL ($PREC precision), dictionaries under models/.
+          tifa -- TIFA (Token-Imputing Forced Aligner) inference engine
+          =============================================================
+          Bundled model: $MODEL ($PREC precision).
 
-          Quick start (note: -l is required -- the model is multilingual and its
-          symbols are language-qualified, so `zh`, `a`, ... do not resolve
-          without it):
-            tifa_ggml_cli align song.wav -m models/tifa.gguf --text-file song.txt -l zh -o out
-            tifa_ggml_cli breathe song.wav -m models/breath-v5-24k-f16.gguf --merge out -o out
-            tifa_ggml_cli align song.wav -m models/tifa.gguf --textgrid out -l zh -o out2
+          This is the engine only: it aligns audio against a KNOWN phoneme
+          sequence.  Text-to-phoneme (G2P), breath detection and the desktop
+          GUI are intentionally out of scope -- see docs/scope-change.md:
+            https://github.com/KakaruHayate/tifa.cpp/blob/main/docs/scope-change.md
 
-          models/$FBL is the FoxBreatheLabeler AP detector and the default one
-          (`breathe ... -m models/$FBL --merge out -o out`).
+          Quick start:
+            ./tifa inspect models/tifa.gguf
+            ./tifa align song.wav -m models/tifa.gguf --phones "AP zh e n" -l zh -o out
+            ./tifa align song.wav -m models/tifa.gguf --textgrid song.TextGrid -l zh -o out
 
-          BreathLab is the alternative (by Xiantaidu,
-          https://github.com/Xiantaidu); when this bundle has no
-          models/breath-*.gguf, convert it from the BreathLab source zip that
-          is published next to this archive:
-            python scripts/convert_breath_to_gguf.py --model-dir models_dml --name v5_24k -o breath.gguf
+          -l is required: the model is multilingual and its symbols are
+          language-qualified, so "zh", "a", ... do not resolve without it.
 
-          Japanese: kana lyrics work out of the box; kanji lyrics need the
-          unidic-lite-dicdir.zip release asset unpacked as models/unidic/
-          (the GUI installs it with one click).
-          日语：假名歌词开箱即用；汉字歌词需将 release 的 unidic-lite-dicdir.zip
-          解压为 models/unidic/（GUI 可一键安装）。
-
-          The full workflow (TIFA -> BreathLab -> 2PASS) is documented in
-          docs/dataset-workflow.md.
+          Full usage: USAGE.md
           EOF
             # Prove the assembled bundle actually runs before archiving it: a
             # missing runtime library (libgcc on Windows, a wrong RPATH on
             # Linux/macOS) only shows up away from the build directory.
-            ENGINE=$(basename "${{ matrix.bin }}")
+            ENGINE="tifa${{ runner.os == 'Windows' && '.exe' || '' }}"
             ( cd "$PKG" && "./$ENGINE" --version ) \
               || { echo "bundled engine failed to start" >&2; exit 1; }
             ( cd "$PKG" && "./$ENGINE" inspect models/tifa.gguf >/dev/null ) \
@@ -303,249 +197,23 @@ jobs:
           retention-days: 14
 
   # ---------------------------------------------------------------------------
-  # GUI bundles (TIFA Label): the Electron app + engine + Q4 model +
-  # dictionaries + usage guide in ONE archive per platform, so nobody has to
-  # download pieces and assemble them.
-  #   windows-x64 -> .zip        (entries at the archive root, as before)
-  #   linux-x64   -> .tar.gz     (tifa-label/ folder)
-  #   macos-arm64 -> .tar.gz     (tifa-label/ folder, unsigned: Gatekeeper
-  #                               needs a right-click > Open on first launch)
-  # ---------------------------------------------------------------------------
-  gui-bundles:
-    name: ${{ matrix.name }} GUI bundle
-    needs: convert-model
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            name: windows-x64
-            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
-            asset: tifa-label-windows-x64.zip
-            exe: tifa_ggml_cli.exe
-          - os: ubuntu-latest
-            name: linux-x64
-            cmake_extra: "-DTIFA_GGML_VULKAN=ON"
-            asset: tifa-label-linux-x64.tar.gz
-            exe: tifa_ggml_cli
-          - os: macos-14
-            name: macos-arm64
-            cmake_extra: "-DTIFA_GGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
-            asset: tifa-label-macos-arm64.tar.gz
-            exe: tifa_ggml_cli
-
-    defaults:
-      run:
-        shell: bash
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Vulkan SDK (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          curl.exe -sL -o "$env:RUNNER_TEMP/vulkan-sdk.exe" `
-            https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe
-          & "$env:RUNNER_TEMP/vulkan-sdk.exe" --accept-licenses --default-answer --confirm-command install
-          $sdk = Get-ChildItem C:\VulkanSDK -Directory |
-            Sort-Object Name | Select-Object -Last 1
-          if (-not $sdk) {
-            throw "Vulkan SDK installer produced no C:\VulkanSDK\<version> directory"
-          }
-          "VULKAN_SDK=$($sdk.FullName)" >> $env:GITHUB_ENV
-          "$($sdk.FullName)\Bin" >> $env:GITHUB_PATH
-
-      - name: Install Vulkan SDK (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libvulkan-dev glslc spirv-headers spirv-tools
-
-      # No -G on Windows on purpose.  CMake's default generator there is Visual
-      # Studio (MSVC); naming Ninja made CMake pick up the Strawberry-Perl gcc
-      # that sits on the runner's PATH, which linked the engine against MinGW's
-      # libgcc/libstdc++/libwinpthread -- none of them in the bundle, so the
-      # shipped engine could not start on a clean machine.  Keep this identical
-      # to the cli-bundles job.
-      - name: Configure
-        run: |
-          cmake -S . -B build \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DTIFA_GGML_BUILD_CLI=ON \
-                -DTIFA_GGML_BUILD_TESTS=OFF \
-                ${{ matrix.cmake_extra }}
-
-      - name: Build engine
-        run: cmake --build build --parallel 4 --config Release
-
-      - name: Download models
-        uses: actions/download-artifact@v4
-        with:
-          name: tifa-models
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Build the Electron app
-        working-directory: ui
-        env:
-          # Unsigned macOS build: skip identity discovery instead of failing.
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: |
-          set -euo pipefail
-          npm ci
-          case "${{ runner.os }}" in
-            Windows) npx electron-builder --win --dir ;;
-            Linux)   npx electron-builder --linux --dir ;;
-            macOS)   npx electron-builder --mac --dir ;;
-          esac
-
-      - name: Assemble the bundle
-        run: |
-          set -euo pipefail
-          ROOT=bundle/tifa-label
-          rm -rf "$ROOT"; mkdir -p "$ROOT"
-
-          # Electron app (unpacked) at the top level ...
-          case "${{ matrix.name }}" in
-            windows-x64) APP=ui/dist/win-unpacked ;;
-            linux-x64)   APP=ui/dist/linux-unpacked ;;
-            macos-*)     APP=$(ls -d ui/dist/mac* | head -1) ;;
-          esac
-          test -d "$APP" || { echo "no unpacked Electron app at $APP" >&2; ls -la ui/dist; exit 1; }
-          cp -R "$APP"/* "$ROOT"/
-
-          # ... the engine and its shared libraries beside it, where the UI
-          # looks for them (ggml is built shared, so the libraries must travel).
-          cp "build/bin/${{ matrix.exe }}" "$ROOT"/
-          case "${{ runner.os }}" in
-            Windows) cp build/bin/*.dll   "$ROOT"/ ;;
-            Linux)   cp build/bin/*.so*   "$ROOT"/ ;;
-            macOS)   cp build/bin/*.dylib "$ROOT"/ ;;
-          esac
-          ls "$ROOT" | grep -qiE '^(lib)?ggml' \
-            || { echo "no ggml libraries were copied; the engine would not start" >&2; exit 1; }
-
-          # ... and the model + dictionaries under models/.  @dictionaries/...
-          # resolves against the model directory, and the cpp-pinyin engine
-          # tables live under cpp_pinyin/ beside it.
-          mkdir -p "$ROOT/models/dictionaries" "$ROOT/models/assets"
-          cp tifa-1.0-st-q4_0.gguf "$ROOT/models/"
-          cp dicts/*.txt "$ROOT/models/dictionaries/"
-          cp -r dicts/cpp_pinyin "$ROOT/models/"
-          # English OOV model (model_path @assets/LstmG2p-Eng in the GGUF).
-          cp lstm-g2p-eng.gguf "$ROOT/models/assets/LstmG2p-Eng.gguf"
-          # BreathLab breath model (absent when the source download failed).
-          if [ -f breath-v5-24k-f16.gguf ]; then cp breath-v5-24k-f16.gguf "$ROOT/models/"; fi
-          # this bundle carries the Q4_0 aligner, so the detector matches it
-          if [ -f breath-fbl-q4_0.gguf ]; then cp breath-fbl-q4_0.gguf "$ROOT/models/"; fi
-
-          cp docs/usage.md "$ROOT/USAGE.md"
-          cat > "$ROOT/README.txt" <<'EOF'
-          TIFA Label - quick start (dataset annotation)
-          =============================================
-          1. Run "TIFA Label" (Windows: "TIFA Label.exe"; Linux: ./"TIFA Label";
-             macOS: open "TIFA Label.app", right-click > Open the first time).
-          2. The engine and models sit beside the app and are imported
-             automatically - no setup.  Aligner: models/tifa-1.0-st-q4_0.gguf,
-             breath: models/breath-fbl-q4_0.gguf (the default FoxBreatheLabeler
-             detector when present). BreathLab is the alternative:
-             models/breath-v5-24k-f16.gguf (a BreathLab model by Xiantaidu,
-             https://github.com/Xiantaidu; if it is missing, convert it from
-             the source zip published beside this archive with
-             scripts/convert_breath_to_gguf.py).
-          3. Import audio files or a folder, choose the annotation source
-             (text/G2P or existing phones), enable the breath/2PASS stages,
-             then run.  Each file yields <name>.TextGrid plus
-             <name>.diagnosis.json (sort by it to proof-read the worst ~10%).
-
-          Japanese: kana lyrics work out of the box.  For kanji lyrics,
-          install the Japanese dictionary with one click from the
-          environment panel (日语词典) - or unpack unidic-lite-dicdir.zip
-          from the release as models/unidic/ yourself.
-          日语：假名开箱即用；汉字歌词在顶栏"日语词典"一键安装，或将 release 的
-          unidic-lite-dicdir.zip 解压为 models/unidic/。
-
-          The bundled engine is also usable from the command line:
-            tifa_ggml_cli --help     (align / inspect / breathe)
-          EOF
-
-          # The bundle is worthless if the engine cannot even start, and a
-          # missing runtime library only shows up on a machine without the
-          # build toolchain -- exactly like the user's.  Run it from the
-          # bundle's own directory, against the bundled model, before archiving.
-          cd "$ROOT"
-          ./${{ matrix.exe }} --version
-          ./${{ matrix.exe }} inspect models/tifa-1.0-st-q4_0.gguf > /dev/null
-          echo "bundled engine starts and loads the bundled model"
-
-      - name: Archive
-        run: |
-          set -euo pipefail
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # Entries at the archive root, so extracting gives the app directly
-            # (the UI looks for models/ beside its own executable).
-            powershell -NoProfile -Command \
-              "Compress-Archive -Path 'bundle/tifa-label/*' -DestinationPath '${{ matrix.asset }}' -Force"
-          else
-            tar -czf "${{ matrix.asset }}" -C bundle tifa-label
-          fi
-          ls -la "${{ matrix.asset }}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tifa-label-${{ matrix.name }}
-          path: ${{ matrix.asset }}
-          retention-days: 14
-
-  # ---------------------------------------------------------------------------
-  # Publish everything to the release (tag) or the `edge` pre-release.
+  # Publish to the release (tag) or the `edge` pre-release.
   # ---------------------------------------------------------------------------
   publish:
     name: publish
-    needs: [cli-bundles, gui-bundles]
+    needs: [cli-bundles]
     runs-on: ubuntu-latest
     steps:
       - name: Collect CLI bundles
         uses: actions/download-artifact@v4
         with:
-          path: dist-cli
+          path: dist
           pattern: "*-cli-bundles"
-
-      - name: Collect GUI bundle
-        uses: actions/download-artifact@v4
-        with:
-          path: dist-gui
-          pattern: "tifa-label-*"
-
-      # Re-attach the BreathLab source zip so every release carries it (the
-      # bundles' breath model is converted from it, and users without a
-      # models/breath-*.gguf are told to convert it themselves).  Tolerant:
-      # when the upstream upload could not be fetched there is no artifact.
-      - name: Collect the BreathLab source zip
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          path: dist-src
-          pattern: "breathlab-source"
-
-      # The MeCab/UniDic dictionary for the `japanese-mecab` converter ships
-      # as its own asset (see convert-model above): users unpack it next to
-      # the model, the bundles never carry it.
-      - name: Collect the unidic-lite dictionary asset
-        continue-on-error: true
-        uses: actions/download-artifact@v4
-        with:
-          path: dist-unidic
-          pattern: "unidic-dicdir"
 
       - name: Flatten
         run: |
-          mkdir -p out dist-src dist-unidic
-          find dist-cli dist-gui dist-src dist-unidic -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} out/ \;
+          mkdir -p out
+          find dist -type f -name '*.tar.gz' -exec cp {} out/ \;
           ls -la out/
 
       - name: Publish release
